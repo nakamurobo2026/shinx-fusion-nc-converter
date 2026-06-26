@@ -20,7 +20,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-shinx-zdelta1";
+var SHINX_POST_VERSION = "2026-06-26-shinx-zorder1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -189,6 +189,10 @@ function writeFixedBlock(n, words) {
   writeln("O0000 N" + pad(n, 6) + (words ? " " + words : ""));
 }
 
+function writeComment(text) {
+  writeln("(SHINX " + text + ")");
+}
+
 function resetMotionModals() {
   currentMotion = undefined;
   currentPlane = undefined;
@@ -228,16 +232,21 @@ function writeAbsoluteMotion(code, x, y, z, feed) {
   writeShinxBlock.apply(null, words);
 }
 
-function writeRelativeZMotion(code, deltaZ, feed) {
+function writeRelativeZMotion(code, deltaZ, feed, comment) {
   if (deltaZ === undefined || sameCoordinate(deltaZ, 0)) {
     return;
   }
+  if (comment) {
+    writeComment(comment);
+  }
   var words = [
-    distanceModeWord("G91"),
-    motionWord(code),
+    "G91",
+    code,
     "Z" + fmt(deltaZ),
     feedWord(feed)
   ];
+  currentDistanceMode = "G91";
+  currentMotion = code;
   writeShinxBlock.apply(null, words);
   if (zOutput !== undefined) {
     zOutput += deltaZ;
@@ -441,14 +450,14 @@ function getInitialPositionXY() {
 }
 
 function writeOriginSetup() {
-  var safeZ = getSafeZ();
   shinxZAtMaterialTop = false;
+  writeComment("G90 move to machine machining origin XY");
   writeShinxBlock("G90 G00", "X" + fmt(getProperty("machineOriginX")), "Y" + fmt(getProperty("machineOriginY")));
+  writeComment("G92 set Fusion XY origin at current machine position");
   writeShinxBlock("G92", "X 0.000", "Y 0.000");
+  writeComment("M21 enable SHINX machining mode");
   writeShinxBlock("M21");
-  writeShinxBlock("G90 G00", "Z " + fmt(safeZ));
   resetMotionModals();
-  forceXYZ(undefined, undefined, safeZ);
   currentDistanceMode = "G90";
 }
 
@@ -498,20 +507,25 @@ function writeToolChange(shinxTool, speed) {
 
 function writeFirstXYMove() {
   var initial = getInitialPositionXY();
+  var safeZ = getSafeZ();
   var approachZ = getApproachZ();
+  writeComment("G90 move XY to Fusion first cut position");
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
+  writeComment("G90 move Z to SafeZ materialThickness+safeClearance");
+  writeShinxBlock("G90 G00", "Z " + fmt(safeZ));
   if (approachZ !== undefined) {
+    writeComment("G90 move Z to ApproachZ materialThickness+approachClearance");
     writeShinxBlock("G90 G00", "Z " + fmt(approachZ));
     resetMotionModals();
     forceXYZ(initial.x, initial.y, approachZ);
     currentDistanceMode = "G90";
-    writeRelativeZMotion("G01", -getProperty("approachClearance"), getProperty("plungeFeed"));
+    writeRelativeZMotion("G01", -getProperty("approachClearance"), getProperty("plungeFeed"), "G91 lower from ApproachZ to material top");
     lastFusionZ = 0;
     shinxZAtMaterialTop = true;
     return;
   }
   resetMotionModals();
-  forceXYZ(initial.x, initial.y, approachZ !== undefined ? approachZ : getSafeZ());
+  forceXYZ(initial.x, initial.y, safeZ);
   currentDistanceMode = "G90";
 }
 
@@ -520,7 +534,7 @@ function writeMotion(code, x, y, z, feed) {
     if (x !== undefined || y !== undefined) {
       writeAbsoluteMotion(code, x, y, undefined, feed);
     }
-    writeRelativeZMotion(code, z - lastFusionZ, feed);
+    writeRelativeZMotion(code, z - lastFusionZ, feed, "G91 output Fusion Z delta, then next XY block returns to G90 when needed");
     lastFusionZ = z;
     return;
   }
@@ -574,10 +588,9 @@ function onSection() {
     writeToolChange(shinxTool, speed);
     currentFusionTool = fusionTool;
   } else {
-    var safeZ = getSafeZ();
-    writeShinxBlock("G90 G00", "Z" + fmt(safeZ));
     resetMotionModals();
-    forceXYZ(undefined, undefined, safeZ);
+    currentDistanceMode = "G90";
+    shinxZAtMaterialTop = false;
   }
 
   writeFirstXYMove();
@@ -614,7 +627,7 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
   }
   writeShinxBlock.apply(null, words);
   if (z !== undefined && shinxZAtMaterialTop) {
-    writeRelativeZMotion("G01", z - lastFusionZ, feed);
+    writeRelativeZMotion("G01", z - lastFusionZ, feed, "G91 output Fusion arc Z delta separately");
     lastFusionZ = z;
   }
 }
@@ -673,6 +686,7 @@ function onClose() {
   }
   writeShinxBlock("G218");
   writeFixedBlock(9508, "S0 T100");
+  writeComment("G90 retract to SafeZ at program end");
   writeFixedBlock(9509, "G90 G00 Z " + fmt(getSafeZ()));
   writeFixedBlock(9510, "G219");
   writeFixedBlock(9511, "G04 X1.0");

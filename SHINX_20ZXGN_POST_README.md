@@ -48,8 +48,8 @@ G65 P9900 L1
 G90 G00 X{machine_origin_x} Y{machine_origin_y}
 G92 X0.000 Y0.000
 M21
-G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
+G90 G00 Z{safe_z}
 G90 G00 Z{approach_z}
 G91 G01 Z-{approach_clearance} F{plunge_feed}
 ```
