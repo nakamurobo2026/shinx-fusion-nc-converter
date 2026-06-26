@@ -20,7 +20,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-auto-height1";
+var SHINX_POST_VERSION = "2026-06-26-shinx-zdelta1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -89,6 +89,14 @@ properties = {
     value: 5.0,
     scope: "post"
   },
+  plungeFeed: {
+    title: "Plunge feed",
+    description: "Feed used for SHINX G91 approach plunge to material top.",
+    group: "shinx",
+    type: "integer",
+    value: 1500,
+    scope: "post"
+  },
   manualMaterialThickness: {
     title: "Manual material thickness",
     description: "Fallback material thickness when stock/model thickness cannot be read.",
@@ -134,6 +142,7 @@ var currentShinxTool = undefined;
 var currentFeed = undefined;
 var currentMotion = undefined;
 var currentPlane = undefined;
+var currentDistanceMode = undefined;
 var currentRadiusCompensation = -1;
 var firstOutputDone = false;
 var spindleIsOn = false;
@@ -142,6 +151,8 @@ var yOutput = undefined;
 var zOutput = undefined;
 var materialThickness = undefined;
 var materialThicknessSource = undefined;
+var lastFusionZ = 0;
+var shinxZAtMaterialTop = false;
 
 function pad(value, width) {
   var text = String(value);
@@ -182,10 +193,19 @@ function resetMotionModals() {
   currentMotion = undefined;
   currentPlane = undefined;
   currentFeed = undefined;
+  currentDistanceMode = undefined;
   currentRadiusCompensation = -1;
   xOutput = undefined;
   yOutput = undefined;
   zOutput = undefined;
+}
+
+function distanceModeWord(code) {
+  if (currentDistanceMode == code) {
+    return undefined;
+  }
+  currentDistanceMode = code;
+  return code;
 }
 
 function motionWord(code) {
@@ -194,6 +214,34 @@ function motionWord(code) {
   }
   currentMotion = code;
   return code;
+}
+
+function writeAbsoluteMotion(code, x, y, z, feed) {
+  var words = [
+    distanceModeWord("G90"),
+    motionWord(code),
+    axisWord("X", x),
+    axisWord("Y", y),
+    axisWord("Z", z),
+    feedWord(feed)
+  ];
+  writeShinxBlock.apply(null, words);
+}
+
+function writeRelativeZMotion(code, deltaZ, feed) {
+  if (deltaZ === undefined || sameCoordinate(deltaZ, 0)) {
+    return;
+  }
+  var words = [
+    distanceModeWord("G91"),
+    motionWord(code),
+    "Z" + fmt(deltaZ),
+    feedWord(feed)
+  ];
+  writeShinxBlock.apply(null, words);
+  if (zOutput !== undefined) {
+    zOutput += deltaZ;
+  }
 }
 
 function planeWord(code) {
@@ -394,12 +442,14 @@ function getInitialPositionXY() {
 
 function writeOriginSetup() {
   var safeZ = getSafeZ();
+  shinxZAtMaterialTop = false;
   writeShinxBlock("G90 G00", "X" + fmt(getProperty("machineOriginX")), "Y" + fmt(getProperty("machineOriginY")));
   writeShinxBlock("G92", "X 0.000", "Y 0.000");
   writeShinxBlock("M21");
   writeShinxBlock("G90 G00", "Z " + fmt(safeZ));
   resetMotionModals();
   forceXYZ(undefined, undefined, safeZ);
+  currentDistanceMode = "G90";
 }
 
 function writeSpindleStart(speed) {
@@ -452,20 +502,29 @@ function writeFirstXYMove() {
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
   if (approachZ !== undefined) {
     writeShinxBlock("G90 G00", "Z " + fmt(approachZ));
+    resetMotionModals();
+    forceXYZ(initial.x, initial.y, approachZ);
+    currentDistanceMode = "G90";
+    writeRelativeZMotion("G01", -getProperty("approachClearance"), getProperty("plungeFeed"));
+    lastFusionZ = 0;
+    shinxZAtMaterialTop = true;
+    return;
   }
   resetMotionModals();
   forceXYZ(initial.x, initial.y, approachZ !== undefined ? approachZ : getSafeZ());
+  currentDistanceMode = "G90";
 }
 
 function writeMotion(code, x, y, z, feed) {
-  var words = [
-    motionWord(code),
-    axisWord("X", x),
-    axisWord("Y", y),
-    axisWord("Z", z),
-    feedWord(feed)
-  ];
-  writeShinxBlock.apply(null, words);
+  if (z !== undefined && shinxZAtMaterialTop) {
+    if (x !== undefined || y !== undefined) {
+      writeAbsoluteMotion(code, x, y, undefined, feed);
+    }
+    writeRelativeZMotion(code, z - lastFusionZ, feed);
+    lastFusionZ = z;
+    return;
+  }
+  writeAbsoluteMotion(code, x, y, z, feed);
 }
 
 function writeRadiusCompensationIfNeeded() {
@@ -542,15 +601,22 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
   }
   var plane = getCircularPlane() == PLANE_ZX ? "G18" : (getCircularPlane() == PLANE_YZ ? "G19" : "G17");
   var words = [
+    distanceModeWord("G90"),
     planeWord(plane),
     motionWord(clockwise ? "G02" : "G03"),
     axisWord("X", x),
     axisWord("Y", y),
-    axisWord("Z", z),
     "R" + fmt(getArcRadius()),
     feedWord(feed)
   ];
+  if (!(z !== undefined && shinxZAtMaterialTop)) {
+    words.splice(5, 0, axisWord("Z", z));
+  }
   writeShinxBlock.apply(null, words);
+  if (z !== undefined && shinxZAtMaterialTop) {
+    writeRelativeZMotion("G01", z - lastFusionZ, feed);
+    lastFusionZ = z;
+  }
 }
 
 function onRadiusCompensation() {
@@ -607,7 +673,7 @@ function onClose() {
   }
   writeShinxBlock("G218");
   writeFixedBlock(9508, "S0 T100");
-  writeFixedBlock(9509, "G90 G00 Z 0.000");
+  writeFixedBlock(9509, "G90 G00 Z " + fmt(getSafeZ()));
   writeFixedBlock(9510, "G219");
   writeFixedBlock(9511, "G04 X1.0");
   writeFixedBlock(9512, "M92 M95");

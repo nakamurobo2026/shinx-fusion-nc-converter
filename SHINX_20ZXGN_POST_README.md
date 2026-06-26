@@ -8,10 +8,10 @@
 
 ## 設計方針
 
-- Fusionが計算したX/Y/Z、送り、円弧を再計算しません。
+- Fusionが計算したX/Y、送り、円弧を基本保持します。
 - `rawZ - sectionInitial.z` のような独自Z補正は行いません。
-- Z値のクランプや深さ変換は行いません。
-- G90/G91の独自変換やツールパスの相対座標化は行いません。
+- Z値のクランプは行いません。
+- ZはSHINX雛形に合わせ、材料厚基準のG90安全高さからG91差分で下げます。
 - SHINX固有のヘッダー、フッター、工具マクロ、G92原点補完だけを差し込みます。
 
 ## 導入方法
@@ -51,9 +51,11 @@ M21
 G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
 G90 G00 Z{approach_z}
+G91 G01 Z-{approach_clearance} F{plunge_feed}
 ```
 
-この後の加工本文はFusion標準のFanuc系モーション出力をそのまま使用します。
+この後の加工本文では、FusionのZ絶対値は出さず、Fusion Zの差分だけをG91で出力します。
+XY、送り、円弧はFusionのFanuc系モーション出力を基本保持します。
 
 `autoSafeHeight` が `true` の場合:
 
@@ -73,6 +75,7 @@ approachZ = materialThickness + approachClearance
 - `autoSafeHeight`: 材料厚から安全高さ/接近高さを自動計算する。初期値 `true`。
 - `safeClearance`: 材料厚へ足す安全余裕。初期値 `20.0`。
 - `approachClearance`: 材料厚へ足す接近余裕。初期値 `5.0`。
+- `plungeFeed`: `approachZ` から材料上面付近へG91で下げる送り。初期値 `1500`。
 - `manualMaterialThickness`: Fusionから材料厚を取得できない場合の手動材料厚。初期値 `30.0`。
 - `spindleSpeedOverride`: 0ならFusion工程のS値を使用。0以外なら固定S値。
 - `useToolMapping`: Fusion工具番号をSHINX工具番号へ変換する。

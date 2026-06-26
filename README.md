@@ -23,10 +23,11 @@ G92 X0.000 Y0.000
 G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
 G90 G00 Z{approach_z}
+G91 G01 Z-{approach_clearance} F{plunge_feed}
 ```
 
 `first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
-Fusion 360専用ポスト `shinx_20zxgn.cps` では、Fusionが計算した工具経路、Z座標、送り、円弧を再計算せず、SHINX固有コードだけを追加します。
+Fusion 360専用ポスト `shinx_20zxgn.cps` では、SHINX雛形に合わせてZをG91差分出力に整理し、XY、送り、円弧はFusionのFanuc系モーション出力を基本保持します。
 専用ポストの `safe_z` / `approach_z` は `autoSafeHeight=true` の時、材料厚 + 余裕量から自動計算します。
 
 ## ローカルFastAPI版
