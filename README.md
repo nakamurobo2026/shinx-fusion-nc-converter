@@ -25,8 +25,7 @@ G90 G00 X{first_cut_x} Y{first_cut_y}
 ```
 
 `first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
-Fusion 360専用ポスト `shinx_20zxgn.cps` では、ポスト固定の接近Z/下降深さではなくFusionのツールパスZを材料上面基準に変換して出力します。
-材料上面を取得できない場合は、`useManualStockTopZ` と `manualStockTopZ` を設定しない限りポストを停止します。
+Fusion 360専用ポスト `shinx_20zxgn.cps` では、Fusionが計算した工具経路、Z座標、送り、円弧を再計算せず、SHINX固有コードだけを追加します。
 
 ## ローカルFastAPI版
 

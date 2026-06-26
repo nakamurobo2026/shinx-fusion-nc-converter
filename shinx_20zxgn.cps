@@ -1,11 +1,10 @@
 /**
   SHINX 20ZXGN post processor for Autodesk Fusion 360.
 
-  Outputs SHINX-ready NC code using the machine's existing tool macros.
-  Tool pickup/return is intentionally delegated to O9000/O9900 macros:
-    T{shinx_tool}
-    G65 P9000 L1
-    G65 P9900 L1
+  Design rule:
+  - Do not recalculate Fusion toolpath coordinates, Z depths, feeds, or arcs.
+  - Keep Fanuc-style motion output simple and modal.
+  - Add only SHINX-specific machine preparation, tool macro, origin, and footer code.
 */
 
 description = "SHINX 20ZXGN";
@@ -15,13 +14,13 @@ legal = "Use at your own risk. Verify with dry-run before machining.";
 certificationLevel = 2;
 minimumRevision = 45821;
 
-longDescription = "SHINX 20ZXGN post processor with P9000/P9900 tool macro calls and fixed G92 origin setup.";
+longDescription = "SHINX 20ZXGN post based on Fanuc-style Fusion motion output with SHINX tool macros and G92 origin setup.";
 
 extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-zstocktop1";
+var SHINX_POST_VERSION = "2026-06-26-standard-motion1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -30,7 +29,7 @@ minimumCircularRadius = spatial(0.01, MM);
 maximumCircularRadius = spatial(1000, MM);
 minimumCircularSweep = toRad(0.01);
 maximumCircularSweep = toRad(180);
-allowHelicalMoves = false;
+allowHelicalMoves = true;
 allowedCircularPlanes = undefined;
 
 properties = {
@@ -60,7 +59,7 @@ properties = {
   },
   safeZ: {
     title: "Safe Z",
-    description: "Safe Z after G92 origin setup.",
+    description: "SHINX safe Z after G92 origin setup.",
     group: "shinx",
     type: "number",
     value: 60.0,
@@ -72,38 +71,6 @@ properties = {
     group: "shinx",
     type: "integer",
     value: 0,
-    scope: "post"
-  },
-  maxDepth: {
-    title: "Max depth",
-    description: "Maximum allowed cutting depth from material top. Z deeper than -maxDepth stops the post.",
-    group: "shinx",
-    type: "number",
-    value: 31.0,
-    scope: "post"
-  },
-  useManualStockTopZ: {
-    title: "Use manual stock top Z",
-    description: "Use manualStockTopZ when Fusion stock/workpiece top cannot be read reliably.",
-    group: "shinx",
-    type: "boolean",
-    value: false,
-    scope: "post"
-  },
-  manualStockTopZ: {
-    title: "Manual stock top Z",
-    description: "Fusion coordinate Z value for stock/workpiece top. Used only when useManualStockTopZ is true.",
-    group: "shinx",
-    type: "number",
-    value: 0.0,
-    scope: "post"
-  },
-  debugZLog: {
-    title: "Debug Z log",
-    description: "Output DEBUG comments before every Z-related output for troubleshooting.",
-    group: "shinx",
-    type: "boolean",
-    value: true,
     scope: "post"
   },
   useToolMapping: {
@@ -132,18 +99,15 @@ var dFormat = createFormat({decimals:0});
 var sequenceNumber = 0;
 var currentFusionTool = undefined;
 var currentShinxTool = undefined;
-var currentPlane = 17;
-var currentPosition = {x:0, y:0, z:0};
 var currentFeed = undefined;
-var currentMode = 90;
-var pendingSectionInitial = undefined;
-var pendingInitialSkips = 0;
-var materialTopZ = undefined;
-var materialTopZSource = undefined;
-var originWasResetAfterToolChange = false;
+var currentMotion = undefined;
+var currentPlane = undefined;
+var currentRadiusCompensation = -1;
 var firstOutputDone = false;
 var spindleIsOn = false;
-var pendingRadiusCompensation = -1;
+var xOutput = undefined;
+var yOutput = undefined;
+var zOutput = undefined;
 
 function pad(value, width) {
   var text = String(value);
@@ -161,7 +125,52 @@ function sameCoordinate(a, b) {
   return a !== undefined && b !== undefined && Math.abs(a - b) <= 0.001;
 }
 
-function getModalFeedWord(feed) {
+function writeShinxBlock() {
+  var words = [];
+  for (var i = 0; i < arguments.length; ++i) {
+    var word = arguments[i];
+    if (word !== undefined && word !== null && word !== "") {
+      words.push(word);
+    }
+  }
+  if (words.length == 0) {
+    return;
+  }
+  writeln("O0000 N" + pad(sequenceNumber, 6) + " " + words.join(" "));
+  sequenceNumber += 1;
+}
+
+function writeFixedBlock(n, words) {
+  writeln("O0000 N" + pad(n, 6) + (words ? " " + words : ""));
+}
+
+function resetMotionModals() {
+  currentMotion = undefined;
+  currentPlane = undefined;
+  currentFeed = undefined;
+  currentRadiusCompensation = -1;
+  xOutput = undefined;
+  yOutput = undefined;
+  zOutput = undefined;
+}
+
+function motionWord(code) {
+  if (currentMotion == code) {
+    return undefined;
+  }
+  currentMotion = code;
+  return code;
+}
+
+function planeWord(code) {
+  if (currentPlane == code) {
+    return undefined;
+  }
+  currentPlane = code;
+  return code;
+}
+
+function feedWord(feed) {
   if (feed === undefined) {
     return undefined;
   }
@@ -173,183 +182,33 @@ function getModalFeedWord(feed) {
   return "F" + formatted;
 }
 
-function debugValue(value) {
-  return value === undefined || value === null ? "NA" : fmt(value);
-}
-
-function debugRawValue(value) {
-  return value === undefined || value === null ? "NA" : String(value);
-}
-
-function getCurrentPositionZForDebug() {
-  try {
-    if (typeof getCurrentPosition == "function") {
-      var position = getCurrentPosition();
-      if (position && position.z !== undefined) {
-        return position.z;
-      }
-    }
-  } catch (e) {
-  }
-  return undefined;
-}
-
-function getSectionInitialZForDebug() {
-  try {
-    if (currentSection) {
-      var initial = getFramePosition(currentSection.getInitialPosition());
-      if (initial && initial.z !== undefined) {
-        return initial.z;
-      }
-    }
-  } catch (e) {
-  }
-  return undefined;
-}
-
-function getWorkOffsetForDebug() {
-  try {
-    if (currentSection && currentSection.workOffset !== undefined) {
-      return currentSection.workOffset;
-    }
-  } catch (e) {
-  }
-  return "NA";
-}
-
-function extractTopZ(candidate) {
-  if (!candidate) {
+function axisWord(axis, value) {
+  if (value === undefined) {
     return undefined;
   }
-  try {
-    if (candidate.upper && candidate.upper.z !== undefined) {
-      return candidate.upper.z;
+  if (axis == "X") {
+    if (sameCoordinate(value, xOutput)) {
+      return undefined;
     }
-    if (candidate.maximum && candidate.maximum.z !== undefined) {
-      return candidate.maximum.z;
+    xOutput = value;
+  } else if (axis == "Y") {
+    if (sameCoordinate(value, yOutput)) {
+      return undefined;
     }
-    if (candidate.max && candidate.max.z !== undefined) {
-      return candidate.max.z;
+    yOutput = value;
+  } else if (axis == "Z") {
+    if (sameCoordinate(value, zOutput)) {
+      return undefined;
     }
-    if (candidate.high && candidate.high.z !== undefined) {
-      return candidate.high.z;
-    }
-    if (typeof candidate.getUpper == "function") {
-      var upper = candidate.getUpper();
-      if (upper && upper.z !== undefined) {
-        return upper.z;
-      }
-    }
-    if (typeof candidate.getMaximum == "function") {
-      var maximum = candidate.getMaximum();
-      if (maximum && maximum.z !== undefined) {
-        return maximum.z;
-      }
-    }
-  } catch (e) {
+    zOutput = value;
   }
-  return undefined;
+  return axis + fmt(value);
 }
 
-function resolveMaterialTopZ() {
-  if (materialTopZ !== undefined) {
-    return materialTopZ;
-  }
-  if (getProperty("useManualStockTopZ")) {
-    materialTopZ = getProperty("manualStockTopZ");
-    materialTopZSource = "manualStockTopZ";
-    return materialTopZ;
-  }
-  try {
-    if (typeof getWorkpiece == "function") {
-      var workpieceTop = extractTopZ(getWorkpiece());
-      if (workpieceTop !== undefined) {
-        materialTopZ = workpieceTop;
-        materialTopZSource = "getWorkpiece";
-        return materialTopZ;
-      }
-    }
-  } catch (e1) {
-  }
-  try {
-    if (currentSection && typeof currentSection.getWorkpiece == "function") {
-      var sectionWorkpieceTop = extractTopZ(currentSection.getWorkpiece());
-      if (sectionWorkpieceTop !== undefined) {
-        materialTopZ = sectionWorkpieceTop;
-        materialTopZSource = "currentSection.getWorkpiece";
-        return materialTopZ;
-      }
-    }
-  } catch (e2) {
-  }
-  try {
-    if (currentSection && typeof currentSection.getSetup == "function") {
-      var setup = currentSection.getSetup();
-      var setupTop = extractTopZ(setup && (setup.stock || setup.workpiece || setup));
-      if (setupTop !== undefined) {
-        materialTopZ = setupTop;
-        materialTopZSource = "currentSection.getSetup";
-        return materialTopZ;
-      }
-    }
-  } catch (e3) {
-  }
-  return undefined;
-}
-
-function transformFusionZ(z) {
-  if (z === undefined) {
-    return undefined;
-  }
-  var topZ = resolveMaterialTopZ();
-  if (topZ === undefined) {
-    error("Cannot determine materialTopZ from Fusion stock/workpiece. Enable useManualStockTopZ and set manualStockTopZ. No Fusion Z output was emitted.");
-    return undefined;
-  }
-  var outputZ = z - topZ;
-  if (outputZ < -getProperty("maxDepth") - 0.001) {
-    error("Fusion Z output " + fmt(outputZ) + " is deeper than allowed maxDepth -" + fmt(getProperty("maxDepth")) + ". Post stopped before emitting unsafe Z.");
-  }
-  return outputZ;
-}
-
-function writeDebugZ(source, rawZ, outputZ, mode) {
-  if (!getProperty("debugZLog")) {
-    return;
-  }
-  writeln("; DEBUG rawZ=" + debugRawValue(rawZ) +
-    " outputZ=" + debugRawValue(outputZ) +
-    " mode=" + mode +
-    " source=" + source +
-    " currentTool=" + debugRawValue(currentFusionTool) +
-    " currentPosition.z=" + debugValue(currentPosition.z) +
-    " getCurrentPosition.z=" + debugValue(getCurrentPositionZForDebug()) +
-    " sectionInitial.z=" + debugValue(getSectionInitialZForDebug()) +
-    " workOffset=" + debugRawValue(getWorkOffsetForDebug()) +
-    " materialTopZ=" + debugValue(materialTopZ) +
-    " materialTopZSource=" + debugRawValue(materialTopZSource) +
-    " maxDepth=" + debugRawValue(getProperty("maxDepth")) +
-    " materialThickness=NA cutStartDepth=NA");
-}
-
-function writeShinxBlock() {
-  var words = [];
-  for (var i = 0; i < arguments.length; ++i) {
-    var word = arguments[i];
-    if (word !== undefined && word !== null && word !== "") {
-      words.push(word);
-    }
-  }
-  if (words.length == 0) {
-    writeln("O0000 N" + pad(sequenceNumber, 6));
-  } else {
-    writeln("O0000 N" + pad(sequenceNumber, 6) + " " + words.join(" "));
-  }
-  sequenceNumber += 1;
-}
-
-function writeFixedBlock(n, words) {
-  writeln("O0000 N" + pad(n, 6) + (words ? " " + words : ""));
+function forceXYZ(x, y, z) {
+  xOutput = x;
+  yOutput = y;
+  zOutput = z;
 }
 
 function getMappedToolNumber(fusionToolNumber) {
@@ -376,7 +235,7 @@ function getSpindleSpeed() {
   return 5000;
 }
 
-function getSectionInitialXY() {
+function getInitialPositionXY() {
   var initial = getFramePosition(currentSection.getInitialPosition());
   return {x:initial.x, y:initial.y, z:initial.z};
 }
@@ -385,28 +244,9 @@ function writeOriginSetup() {
   writeShinxBlock("G90 G00", "X" + fmt(getProperty("machineOriginX")), "Y" + fmt(getProperty("machineOriginY")));
   writeShinxBlock("G92", "X 0.000", "Y 0.000");
   writeShinxBlock("M21");
-  writeDebugZ("writeOriginSetup", undefined, getProperty("safeZ"), "G90");
   writeShinxBlock("G90 G00", "Z " + fmt(getProperty("safeZ")));
-  originWasResetAfterToolChange = true;
-  currentMode = 90;
-  currentPosition.z = getProperty("safeZ");
-}
-
-function writeCutStart(initial) {
-  if (!originWasResetAfterToolChange) {
-    error("Origin reset sequence is missing before machining start.");
-  }
-  if (resolveMaterialTopZ() === undefined) {
-    error("Cannot determine materialTopZ from Fusion stock/workpiece before machining start. Enable useManualStockTopZ and set manualStockTopZ.");
-  }
-  writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
-  writeDebugZ("writeCutStart-materialTop", initial.z, materialTopZ, "G90");
-  currentMode = 90;
-  currentPosition.x = initial.x;
-  currentPosition.y = initial.y;
-  currentPosition.z = getProperty("safeZ");
-  pendingSectionInitial = initial;
-  pendingInitialSkips = 3;
+  resetMotionModals();
+  forceXYZ(undefined, undefined, getProperty("safeZ"));
 }
 
 function writeSpindleStart(speed) {
@@ -425,7 +265,6 @@ function writeInitialHeader(shinxTool, speed) {
   writeFixedBlock(0, "M06");
   writeFixedBlock(1, "M95");
   writeFixedBlock(2, "G53");
-  writeDebugZ("writeInitialHeader-machineZ0", undefined, 0, "G90");
   writeFixedBlock(3, "G90 G00 Z 0.000");
   writeFixedBlock(4, "M92");
   writeFixedBlock(5, "T" + toolFormat.format(shinxTool));
@@ -437,11 +276,11 @@ function writeInitialHeader(shinxTool, speed) {
   sequenceNumber = 12;
   currentShinxTool = shinxTool;
   spindleIsOn = true;
+  resetMotionModals();
   writeOriginSetup();
 }
 
 function writeToolChange(shinxTool, speed) {
-  writeDebugZ("writeToolChange-retract", undefined, 0, "G90");
   writeShinxBlock("G90 G00", "Z0.000");
   writeShinxBlock("S0 T100");
   writeShinxBlock("M92 M95");
@@ -449,124 +288,66 @@ function writeToolChange(shinxTool, speed) {
   writeShinxBlock("T" + toolFormat.format(shinxTool));
   writeShinxBlock("G65 P9000 L1");
   currentShinxTool = shinxTool;
+  resetMotionModals();
   writeSpindleStart(speed);
   writeOriginSetup();
 }
 
-function shouldSkipInitialMove(x, y, z) {
-  if (!pendingSectionInitial || pendingInitialSkips <= 0) {
-    return false;
-  }
-  if (z !== undefined) {
-    pendingSectionInitial = undefined;
-    return false;
-  }
-  if (x !== undefined && Math.abs(x - pendingSectionInitial.x) > 0.001) {
-    pendingSectionInitial = undefined;
-    return false;
-  }
-  if (y !== undefined && Math.abs(y - pendingSectionInitial.y) > 0.001) {
-    pendingSectionInitial = undefined;
-    return false;
-  }
-  pendingInitialSkips -= 1;
-  return true;
+function writeFirstXYMove() {
+  var initial = getInitialPositionXY();
+  writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
+  resetMotionModals();
+  forceXYZ(initial.x, initial.y, getProperty("safeZ"));
 }
 
-function writeMotion(gCode, x, y, z, r, feed, source) {
-  var words = [gCode];
-  var outputZ = transformFusionZ(z);
-  if (z !== undefined) {
-    writeDebugZ(source || "writeMotion", z, outputZ, gCode.indexOf("G91") >= 0 ? "G91" : "G90");
-  }
-  if (x !== undefined && !sameCoordinate(x, currentPosition.x)) {
-    words.push("X" + fmt(x));
-  }
-  if (x !== undefined) {
-    currentPosition.x = x;
-  }
-  if (y !== undefined && !sameCoordinate(y, currentPosition.y)) {
-    words.push("Y" + fmt(y));
-  }
-  if (y !== undefined) {
-    currentPosition.y = y;
-  }
-  if (outputZ !== undefined) {
-    if (!sameCoordinate(outputZ, currentPosition.z)) {
-      words.push("Z" + fmt(outputZ));
-    }
-    currentPosition.z = outputZ;
-  }
-  if (r !== undefined) {
-    words.push("R" + fmt(r));
-  }
-  var feedWord = getModalFeedWord(feed);
-  if (feedWord) {
-    words.push(feedWord);
-  }
-  if (words.length == 1 && (gCode == "G90 G00" || gCode == "G90 G01" || gCode == "G02" || gCode == "G03")) {
+function writeMotion(code, x, y, z, feed) {
+  var words = [
+    motionWord(code),
+    axisWord("X", x),
+    axisWord("Y", y),
+    axisWord("Z", z),
+    feedWord(feed)
+  ];
+  writeShinxBlock.apply(null, words);
+}
+
+function writeRadiusCompensationIfNeeded() {
+  if (radiusCompensation == currentRadiusCompensation) {
     return;
   }
-  writeShinxBlock.apply(null, words);
+  if (radiusCompensation == RADIUS_COMPENSATION_LEFT) {
+    writeShinxBlock("G41", "D" + dFormat.format(tool.diameterOffset));
+  } else if (radiusCompensation == RADIUS_COMPENSATION_RIGHT) {
+    writeShinxBlock("G42", "D" + dFormat.format(tool.diameterOffset));
+  } else {
+    writeShinxBlock("G40");
+  }
+  currentRadiusCompensation = radiusCompensation;
 }
 
-function writeLinearWithRadiusCompensation(x, y, z, feed, source) {
-  var comp = "G40";
-  if (radiusCompensation == RADIUS_COMPENSATION_LEFT) {
-    comp = "G41";
-  } else if (radiusCompensation == RADIUS_COMPENSATION_RIGHT) {
-    comp = "G42";
-  }
-
-  var words = ["G90 G01", comp];
-  var outputZ = transformFusionZ(z);
-  if (z !== undefined) {
-    writeDebugZ(source || "writeLinearWithRadiusCompensation", z, outputZ, "G90");
-  }
-  if (comp != "G40") {
-    words.push("D" + dFormat.format(tool.diameterOffset));
-  }
-  if (x !== undefined && !sameCoordinate(x, currentPosition.x)) {
-    words.push("X" + fmt(x));
-  }
-  if (x !== undefined) {
-    currentPosition.x = x;
-  }
-  if (y !== undefined && !sameCoordinate(y, currentPosition.y)) {
-    words.push("Y" + fmt(y));
-  }
-  if (y !== undefined) {
-    currentPosition.y = y;
-  }
-  if (outputZ !== undefined) {
-    if (!sameCoordinate(outputZ, currentPosition.z)) {
-      words.push("Z" + fmt(outputZ));
+function getArcRadius() {
+  try {
+    if (typeof getCircularRadius == "function") {
+      return getCircularRadius();
     }
-    currentPosition.z = outputZ;
+  } catch (e) {
   }
-  var feedWord = getModalFeedWord(feed);
-  if (feedWord) {
-    words.push(feedWord);
-  }
-  writeShinxBlock.apply(null, words);
+  error("Circular radius was not supplied by the Fusion post engine. Arc output stopped to avoid recalculating the toolpath.");
+  return undefined;
 }
 
 function onOpen() {
   writeln("%");
   writeln("(SHINX_20ZXGN_POST " + SHINX_POST_VERSION + ")");
-  if (getProperty("machiningFace") == 8) {
-    // Face 8 defaults are defined in the post properties.
-  }
 }
 
 function onSection() {
   var fusionTool = tool.number;
   var shinxTool = getMappedToolNumber(fusionTool);
   var speed = getSpindleSpeed();
-  var initial = getSectionInitialXY();
 
   if (currentSection.workOffset && currentSection.workOffset > 0) {
-    warning("G54-G59 work offsets are ignored. SHINX output uses G92 at the configured machine origin.");
+    warning("G54-G59 work offsets are not output. SHINX output uses G92 at the configured machine origin.");
   }
 
   if (!firstOutputDone) {
@@ -577,67 +358,48 @@ function onSection() {
     writeToolChange(shinxTool, speed);
     currentFusionTool = fusionTool;
   } else {
-    writeDebugZ("onSection-sameToolSafeZ", undefined, getProperty("safeZ"), "G90");
     writeShinxBlock("G90 G00", "Z" + fmt(getProperty("safeZ")));
-    currentMode = 90;
-    currentPosition.z = getProperty("safeZ");
+    resetMotionModals();
+    forceXYZ(undefined, undefined, getProperty("safeZ"));
   }
 
-  writeCutStart(initial);
+  writeFirstXYMove();
 }
 
 function onRapid(x, y, z) {
-  if (pendingRadiusCompensation >= 0) {
-    error("Radius compensation cannot be changed on a rapid move.");
-  }
-  if (shouldSkipInitialMove(x, y, z)) {
-    return;
-  }
-  writeMotion("G90 G00", x, y, z, undefined, undefined, "onRapid");
+  writeRadiusCompensationIfNeeded();
+  writeMotion("G00", x, y, z);
 }
 
 function onLinear(x, y, z, feed) {
-  if (shouldSkipInitialMove(x, y, z)) {
-    return;
-  }
-  if (pendingRadiusCompensation >= 0) {
-    pendingRadiusCompensation = -1;
-    writeLinearWithRadiusCompensation(x, y, z, feed, "onLinear-radiusComp");
-    return;
-  }
-  writeMotion("G90 G01", x, y, z, undefined, feed, "onLinear");
-}
-
-function onRadiusCompensation() {
-  pendingRadiusCompensation = radiusCompensation;
-}
-
-function radiusFromCenter(plane, cx, cy, cz) {
-  if (plane == 18) {
-    return Math.sqrt(Math.pow(cx - currentPosition.x, 2) + Math.pow(cz - currentPosition.z, 2));
-  }
-  if (plane == 19) {
-    return Math.sqrt(Math.pow(cy - currentPosition.y, 2) + Math.pow(cz - currentPosition.z, 2));
-  }
-  return Math.sqrt(Math.pow(cx - currentPosition.x, 2) + Math.pow(cy - currentPosition.y, 2));
+  writeRadiusCompensationIfNeeded();
+  writeMotion("G01", x, y, z, feed);
 }
 
 function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
-  if (pendingRadiusCompensation >= 0) {
-    error("Radius compensation cannot be changed on a circular move.");
-  }
+  writeRadiusCompensationIfNeeded();
   if (isFullCircle()) {
     linearize(tolerance);
     return;
   }
-  currentPlane = getCircularPlane() == PLANE_ZX ? 18 : (getCircularPlane() == PLANE_YZ ? 19 : 17);
-  var r = radiusFromCenter(currentPlane, cx, cy, cz);
-  writeMotion("G" + currentPlane, undefined, undefined, undefined, undefined, undefined, "onCircular-plane");
-  writeMotion(clockwise ? "G02" : "G03", x, y, z, r, feed, "onCircular");
+  var plane = getCircularPlane() == PLANE_ZX ? "G18" : (getCircularPlane() == PLANE_YZ ? "G19" : "G17");
+  var words = [
+    planeWord(plane),
+    motionWord(clockwise ? "G02" : "G03"),
+    axisWord("X", x),
+    axisWord("Y", y),
+    axisWord("Z", z),
+    "R" + fmt(getArcRadius()),
+    feedWord(feed)
+  ];
+  writeShinxBlock.apply(null, words);
+}
+
+function onRadiusCompensation() {
+  writeRadiusCompensationIfNeeded();
 }
 
 function onCycle() {
-  // Canned cycles are expanded so no unsupported Fusion cycle G-code is emitted.
 }
 
 function onCyclePoint(x, y, z) {
@@ -685,8 +447,8 @@ function onClose() {
   if (!firstOutputDone) {
     warning("No machining sections were output.");
   }
+  writeShinxBlock("G218");
   writeFixedBlock(9508, "S0 T100");
-  writeDebugZ("onClose-footerRetract", undefined, 0, "G90");
   writeFixedBlock(9509, "G90 G00 Z 0.000");
   writeFixedBlock(9510, "G219");
   writeFixedBlock(9511, "G04 X1.0");

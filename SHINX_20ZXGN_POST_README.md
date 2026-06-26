@@ -1,10 +1,18 @@
 # SHINX 20ZXGN Fusion 360 Post Processor
 
-`shinx_20zxgn.cps` は、Fusion 360からSHINX 20ZXGN用NCコードを直接出力するための専用ポストです。
+`shinx_20zxgn.cps` は、Fusion 360のFanuc系モーション出力をベースに、SHINX 20ZXGN固有の機械準備コードだけを追加する専用ポストです。
 
 ## ダウンロード
 
 [shinx_20zxgn.cps](https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps)
+
+## 設計方針
+
+- Fusionが計算したX/Y/Z、送り、円弧を再計算しません。
+- `rawZ - sectionInitial.z` のような独自Z補正は行いません。
+- Z値のクランプや深さ変換は行いません。
+- G90/G91の独自変換やツールパスの相対座標化は行いません。
+- SHINX固有のヘッダー、フッター、工具マクロ、G92原点補完だけを差し込みます。
 
 ## 導入方法
 
@@ -19,13 +27,7 @@
 %APPDATA%\Autodesk\Fusion 360 CAM\Posts
 ```
 
-Fusionのバージョンや環境により場所が異なる場合があります。
-
-## 重要方針
-
-- ATCの細かい動作はポスト内で展開しません。
-- SHINX側の既存マクロ `P9000` / `P9900` を呼び出します。
-- `O9000` / `O9900` 系マクロの中身は変更しません。
+## SHINX固有コード
 
 工具取得:
 
@@ -40,9 +42,7 @@ G65 P9000 L1
 G65 P9900 L1
 ```
 
-## 原点設定シーケンス
-
-加工前は必ず次の順序で出力します。
+原点設定:
 
 ```nc
 G90 G00 X{machine_origin_x} Y{machine_origin_y}
@@ -52,9 +52,7 @@ G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
 ```
 
-`first_cut_x` / `first_cut_y` はFusionの各工程の初期位置から取得します。
-以降のZ移動はポスト側の固定値ではなく、FusionのツールパスZを材料上面 `materialTopZ` 基準に変換して出力します。
-`materialTopZ` をFusionのstock/workpieceから取得できない場合、ポストはZ出力前に停止します。
+この後の加工本文はFusion標準のFanuc系モーション出力をそのまま使用します。
 
 ## ポストプロパティ
 
@@ -63,10 +61,6 @@ G90 G00 X{first_cut_x} Y{first_cut_y}
 - `machineOriginY`: 機械側加工原点Y。初期値 `-2610.910`。
 - `safeZ`: G92後の安全Z。初期値 `60.0`。
 - `spindleSpeedOverride`: 0ならFusion工程のS値を使用。0以外なら固定S値。
-- `maxDepth`: 材料上面からの最大加工深さ。`Z-31` より深い値はエラーで停止。初期値 `31.0`。
-- `useManualStockTopZ`: Fusionから材料上面を取得できない場合に手動値を使う。
-- `manualStockTopZ`: 材料上面のFusion座標Z。`useManualStockTopZ` が `true` の時だけ使用。
-- `debugZLog`: Z変換調査用コメントを出力する。
 - `useToolMapping`: Fusion工具番号をSHINX工具番号へ変換する。
 - `tool1Mapped` ... `tool7Mapped`: 工具番号マッピング。
 
