@@ -131,6 +131,7 @@ var originWasResetAfterToolChange = false;
 var firstOutputDone = false;
 var spindleIsOn = false;
 var pendingRadiusCompensation = -1;
+var depthWarningIssued = false;
 
 function pad(value, width) {
   var text = String(value);
@@ -291,8 +292,9 @@ function writeMotion(gCode, x, y, z, r, feed) {
     currentPosition.y = y;
   }
   if (z !== undefined) {
-    if (z < -getProperty("maxDepth") - 0.001) {
-      error("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ".");
+    if (z < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
+      warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
+      depthWarningIssued = true;
     }
     words.push("Z" + fmt(z));
     currentPosition.z = z;
@@ -327,8 +329,9 @@ function writeLinearWithRadiusCompensation(x, y, z, feed) {
     currentPosition.y = y;
   }
   if (z !== undefined) {
-    if (z < -getProperty("maxDepth") - 0.001) {
-      error("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ".");
+    if (z < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
+      warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
+      depthWarningIssued = true;
     }
     words.push("Z" + fmt(z));
     currentPosition.z = z;
