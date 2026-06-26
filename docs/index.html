@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SHINX Fusion NC Converter</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>SHINX Fusion NC Converter</h1>
+        <p>Fusion 360 CAD/CAM Gコードを SHINX 20ZXGN 用NCコードへ変換</p>
+      </div>
+      <div class="actions">
+        <button id="convertBtn">変換</button>
+        <button id="saveNcBtn" disabled>.nc保存</button>
+        <button id="saveTxtBtn" disabled>.txt保存</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="settings">
+        <section>
+          <h2>加工設定</h2>
+          <label>加工面<select id="faceSelect"></select></label>
+          <div class="grid2">
+            <label>機械原点 X<input id="machine_origin_x" type="number" step="0.001" /></label>
+            <label>機械原点 Y<input id="machine_origin_y" type="number" step="0.001" /></label>
+            <label>安全Z<input id="safe_z" type="number" step="0.001" /></label>
+            <label>主軸回転数<input id="spindle_speed" type="number" step="1" /></label>
+            <label>切込送り<input id="plunge_feed" type="number" step="1" /></label>
+            <label>初期切込<input id="cut_start_depth" type="number" step="0.001" /></label>
+            <label>最大深さ<input id="max_cut_depth" type="number" step="0.001" /></label>
+            <label>逃げ幅<input id="clearance" type="number" step="0.001" /></label>
+            <label>材料 X<input id="material_size_x" type="number" step="0.001" /></label>
+            <label>材料 Y<input id="material_size_y" type="number" step="0.001" /></label>
+            <label>材料厚<input id="material_thickness" type="number" step="0.001" /></label>
+          </div>
+        </section>
+
+        <section>
+          <h2>工具マッピング</h2>
+          <div id="toolMapping" class="tool-grid"></div>
+        </section>
+      </aside>
+
+      <section class="workspace">
+        <div id="dropZone" class="dropzone">
+          <strong>Gコードをドロップ</strong>
+          <span>.nc / .txt を読み込み、または左側へ貼り付け</span>
+          <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
+        </div>
+
+        <div class="compare">
+          <label>
+            <span>変換前</span>
+            <textarea id="inputCode" spellcheck="false"></textarea>
+          </label>
+          <label>
+            <span>変換後</span>
+            <textarea id="outputCode" spellcheck="false" readonly></textarea>
+          </label>
+        </div>
+
+        <section class="log-panel">
+          <h2>変換ログ</h2>
+          <div id="logOutput" class="log"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
