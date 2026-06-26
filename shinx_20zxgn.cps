@@ -124,6 +124,7 @@ var currentFusionTool = undefined;
 var currentShinxTool = undefined;
 var currentPlane = 17;
 var currentPosition = {x:0, y:0, z:0};
+var currentFeed = undefined;
 var currentMode = 90;
 var pendingSectionInitial = undefined;
 var pendingInitialSkips = 0;
@@ -143,6 +144,22 @@ function pad(value, width) {
 
 function fmt(value) {
   return xyzFormat.format(value);
+}
+
+function sameCoordinate(a, b) {
+  return a !== undefined && b !== undefined && Math.abs(a - b) <= 0.001;
+}
+
+function getModalFeedWord(feed) {
+  if (feed === undefined) {
+    return undefined;
+  }
+  var formatted = feedFormat.format(feed);
+  if (currentFeed == formatted) {
+    return undefined;
+  }
+  currentFeed = formatted;
+  return "F" + formatted;
 }
 
 function writeShinxBlock() {
@@ -211,6 +228,7 @@ function writeCutStart(initial) {
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
   writeShinxBlock("G90 G00", "Z" + fmt(getProperty("approachZ")));
   writeShinxBlock("G91 G01", "Z-" + fmt(getProperty("maxDepth")), "F" + feedFormat.format(getProperty("plungeFeed")));
+  currentFeed = feedFormat.format(getProperty("plungeFeed"));
   currentMode = 91;
   currentPosition.x = initial.x;
   currentPosition.y = initial.y;
@@ -283,12 +301,16 @@ function writeMotion(gCode, x, y, z, r, feed) {
   if (gCode == "G90 G00" && (x !== undefined || y !== undefined) && currentPosition.z < getProperty("approachZ") - 0.001) {
     error("Rapid XY move was requested after Z was lowered. XY positioning must occur at safeZ or approachZ.");
   }
-  if (x !== undefined) {
+  if (x !== undefined && !sameCoordinate(x, currentPosition.x)) {
     words.push("X" + fmt(x));
+  }
+  if (x !== undefined) {
     currentPosition.x = x;
   }
-  if (y !== undefined) {
+  if (y !== undefined && !sameCoordinate(y, currentPosition.y)) {
     words.push("Y" + fmt(y));
+  }
+  if (y !== undefined) {
     currentPosition.y = y;
   }
   if (z !== undefined) {
@@ -296,14 +318,20 @@ function writeMotion(gCode, x, y, z, r, feed) {
       warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
       depthWarningIssued = true;
     }
-    words.push("Z" + fmt(z));
+    if (!sameCoordinate(z, currentPosition.z)) {
+      words.push("Z" + fmt(z));
+    }
     currentPosition.z = z;
   }
   if (r !== undefined) {
     words.push("R" + fmt(r));
   }
-  if (feed !== undefined) {
-    words.push("F" + feedFormat.format(feed));
+  var feedWord = getModalFeedWord(feed);
+  if (feedWord) {
+    words.push(feedWord);
+  }
+  if (words.length == 1 && (gCode == "G90 G00" || gCode == "G90 G01" || gCode == "G02" || gCode == "G03")) {
+    return;
   }
   writeShinxBlock.apply(null, words);
 }
@@ -320,12 +348,16 @@ function writeLinearWithRadiusCompensation(x, y, z, feed) {
   if (comp != "G40") {
     words.push("D" + dFormat.format(tool.diameterOffset));
   }
-  if (x !== undefined) {
+  if (x !== undefined && !sameCoordinate(x, currentPosition.x)) {
     words.push("X" + fmt(x));
+  }
+  if (x !== undefined) {
     currentPosition.x = x;
   }
-  if (y !== undefined) {
+  if (y !== undefined && !sameCoordinate(y, currentPosition.y)) {
     words.push("Y" + fmt(y));
+  }
+  if (y !== undefined) {
     currentPosition.y = y;
   }
   if (z !== undefined) {
@@ -333,11 +365,14 @@ function writeLinearWithRadiusCompensation(x, y, z, feed) {
       warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
       depthWarningIssued = true;
     }
-    words.push("Z" + fmt(z));
+    if (!sameCoordinate(z, currentPosition.z)) {
+      words.push("Z" + fmt(z));
+    }
     currentPosition.z = z;
   }
-  if (feed !== undefined) {
-    words.push("F" + feedFormat.format(feed));
+  var feedWord = getModalFeedWord(feed);
+  if (feedWord) {
+    words.push(feedWord);
   }
   writeShinxBlock.apply(null, words);
 }
