@@ -2,6 +2,10 @@
 
 `shinx_20zxgn.cps` は、Fusion 360からSHINX 20ZXGN用NCコードを直接出力するための専用ポストです。
 
+## ダウンロード
+
+[shinx_20zxgn.cps](https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps)
+
 ## 導入方法
 
 1. `shinx_20zxgn.cps` をFusion 360のローカルポストフォルダへ配置します。

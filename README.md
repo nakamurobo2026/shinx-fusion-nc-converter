@@ -42,6 +42,9 @@ python -m uvicorn app:app --host 127.0.0.1 --port 8000
 
 Fusion 360からSHINX 20ZXGN用NCコードを直接出す専用ポストは `shinx_20zxgn.cps` です。
 
+ダウンロード:
+[shinx_20zxgn.cps](https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps)
+
 導入方法とプロパティ説明は `SHINX_20ZXGN_POST_README.md` を参照してください。
 
 ## GitHub Pages
