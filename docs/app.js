@@ -7,7 +7,7 @@ const state = {
   playing: false,
   speed: 1,
   lastFrame: 0,
-  xyMode: "material",
+  xyMode: "work",
 };
 
 let scene;
@@ -432,35 +432,23 @@ function addMarker(p, color, type, size = 6) {
 
 function animate(time = 0) {
   animationId = requestAnimationFrame(animate);
-  const dt = state.lastFrame ? (time - state.lastFrame) / 1000 : 0;
   state.lastFrame = time;
   if (state.playing && state.analysis.segments.length) {
-    advancePlayback(dt * state.speed);
+    advancePlayback(playbackBlockStep());
   }
-  controls?.update();
-  renderer?.render(scene, camera);
 }
 
-function advancePlayback(seconds) {
-  let remaining = seconds;
-  while (remaining > 0 && state.analysis.segments.length) {
-    const seg = state.analysis.segments[state.index];
-    const local = (seg.playhead || 0) + remaining;
-    if (local >= seg.duration) {
-      seg.playhead = seg.duration;
-      if (state.index >= state.analysis.segments.length - 1) {
-        state.playing = false;
-        remaining = 0;
-      } else {
-        remaining = local - seg.duration;
-        seg.playhead = 0;
-        state.index += 1;
-        state.analysis.segments[state.index].playhead = 0;
-      }
-      continue;
-    }
-    seg.playhead = local;
-    remaining = 0;
+function playbackBlockStep() {
+  if ($("speedSelect").value === "max") return Number.MAX_SAFE_INTEGER;
+  return Math.max(1, Math.trunc(Number($("speedSelect").value) || 1));
+}
+
+function advancePlayback(blocks) {
+  if (!state.analysis.segments.length) return;
+  const next = Math.min(state.analysis.segments.length - 1, state.index + blocks);
+  state.index = next;
+  if (state.index >= state.analysis.segments.length - 1) {
+    state.playing = false;
   }
   updateToolAtIndex(state.index);
 }
@@ -468,11 +456,10 @@ function advancePlayback(seconds) {
 function currentPosition() {
   const seg = state.analysis.segments[state.index];
   if (!seg) return { x: 0, y: 0, z: 0, f: null, s: null, t: null, line: null };
-  const t = Math.max(0, Math.min(1, (seg.playhead || 0) / Math.max(0.001, seg.duration)));
   return {
-    x: seg.from.x + (seg.to.x - seg.from.x) * t,
-    y: seg.from.y + (seg.to.y - seg.from.y) * t,
-    z: seg.from.z + (seg.to.z - seg.from.z) * t,
+    x: seg.to.x,
+    y: seg.to.y,
+    z: seg.to.z,
     f: seg.f, s: seg.s, t: seg.t, line: seg.line, nNumber: seg.nNumber,
   };
 }
@@ -495,7 +482,6 @@ function updateToolAtIndex(index) {
 }
 
 function jumpToIndex(index) {
-  state.analysis.segments.forEach((seg) => { seg.playhead = 0; });
   updateToolAtIndex(index);
 }
 
@@ -624,26 +610,78 @@ function drawXY() {
   const px = (p) => ({ x: pad + (p.x - bounds.minX) * scale, y: h - pad - (p.y - bounds.minY) * scale });
   const m0 = px({ x: 0, y: 0 });
   const m1 = px({ x: inf.materialX, y: inf.materialY });
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(m0.x, m1.y, m1.x - m0.x, m0.y - m1.y);
   ctx.strokeStyle = "#8b95a1";
   ctx.lineWidth = 2;
   ctx.strokeRect(m0.x, m1.y, m1.x - m0.x, m0.y - m1.y);
+  const r0 = px({ x: inf.minX ?? 0, y: inf.minY ?? 0 });
+  const r1 = px({ x: inf.maxX ?? inf.materialX, y: inf.maxY ?? inf.materialY });
+  ctx.strokeStyle = "#9333ea";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([7, 5]);
+  ctx.strokeRect(r0.x, r1.y, r1.x - r0.x, r0.y - r1.y);
+  ctx.setLineDash([]);
   a.segments.forEach((seg, idx) => {
     const p0 = px(seg.from);
     const p1 = px(seg.to);
-    ctx.strokeStyle = idx <= state.index ? (seg.type === "G00" ? "#6b7280" : "#0f766e") : "#cbd5df";
+    const done = idx <= state.index;
+    const active = idx === state.index;
+    const cutColor = ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
+    ctx.strokeStyle = done ? (seg.type === "G00" ? "#6b7280" : cutColor) : "#cbd5df";
     ctx.lineWidth = idx === state.index ? 4 : 2;
     ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
     ctx.beginPath();
     ctx.moveTo(p0.x, p0.y);
     ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
+    if (active) {
+      ctx.fillStyle = "#dc2626";
+      ctx.beginPath();
+      ctx.arc(p1.x, p1.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   });
   ctx.setLineDash([]);
+  drawCross2d(ctx, px({ x: 0, y: 0 }), 10, "#111827");
+  if (inf.start) {
+    const p = px(inf.start);
+    ctx.fillStyle = "#111827";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 7, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (inf.end) {
+    const p = px(inf.end);
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(p.x - 6, p.y - 6, 12, 12);
+  }
+  a.toolEvents.forEach((event) => {
+    const p = px(event);
+    ctx.fillStyle = event.type === "P9000" ? "#f59e0b" : "#dc2626";
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 8);
+    ctx.lineTo(p.x + 8, p.y + 8);
+    ctx.lineTo(p.x - 8, p.y + 8);
+    ctx.closePath();
+    ctx.fill();
+  });
   const pos = px(currentPosition());
   ctx.fillStyle = "#dc2626";
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawCross2d(ctx, p, size, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p.x - size, p.y);
+  ctx.lineTo(p.x + size, p.y);
+  ctx.moveTo(p.x, p.y - size);
+  ctx.lineTo(p.x, p.y + size);
+  ctx.stroke();
 }
 
 function padBounds(b, ratio) {
@@ -668,6 +706,42 @@ function updateTimeline() {
   $("timeline").value = state.index;
   const elapsed = state.analysis.segments.slice(0, state.index).reduce((sum, s) => sum + s.duration, 0);
   $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
+}
+
+function motionIndexForLine(line) {
+  if (!state.analysis.segments.length) return 0;
+  const exact = state.analysis.segments.find((seg) => seg.line >= line);
+  return exact ? exact.index : state.analysis.segments.length - 1;
+}
+
+function jumpToFirstCut() {
+  const target = state.analysis.segments.find((seg) => ["G01", "G02", "G03"].includes(seg.type));
+  if (target) jumpToIndex(target.index);
+}
+
+function jumpToNextToolChange() {
+  const currentLine = currentPosition().line || 0;
+  const event = state.analysis.toolEvents.find((item) => item.line > currentLine);
+  if (event) jumpToIndex(motionIndexForLine(event.line));
+}
+
+function jumpToNextWarning() {
+  const currentLine = currentPosition().line || 0;
+  const warning = state.analysis.safety.find((item) => Number(item.line || 0) > currentLine);
+  if (warning) jumpToIndex(motionIndexForLine(Number(warning.line || 0)));
+}
+
+function jumpToMinZ() {
+  if (!state.analysis.segments.length) return;
+  let best = state.analysis.segments[0];
+  state.analysis.segments.forEach((seg) => {
+    if (seg.to.z < best.to.z) best = seg;
+  });
+  jumpToIndex(best.index);
+}
+
+function jumpToEnd() {
+  if (state.analysis.segments.length) jumpToIndex(state.analysis.segments.length - 1);
 }
 
 function formatTime(seconds) {
@@ -732,6 +806,11 @@ function bindEvents() {
   $("prevBtn").addEventListener("click", () => step(-1));
   $("nextBtn").addEventListener("click", () => step(1));
   $("speedSelect").addEventListener("change", () => { state.speed = Number($("speedSelect").value); });
+  $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
+  $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
+  $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
+  $("jumpMinZBtn").addEventListener("click", jumpToMinZ);
+  $("jumpEndBtn").addEventListener("click", jumpToEnd);
   $("timeline").addEventListener("input", () => { state.playing = false; jumpToIndex(Number($("timeline").value)); });
   $("ncInput").addEventListener("input", scheduleAnalyze);
   $("ncList").addEventListener("click", (event) => {
@@ -803,7 +882,4 @@ renderSafety();
 updateCountLabels();
 drawSection();
 drawXY();
-initThree().catch((error) => {
-  console.warn("3D viewer failed to initialize.", error);
-  $("viewerStatus").textContent = "3D読込失敗 / NC読込は使用可";
-});
+animate();

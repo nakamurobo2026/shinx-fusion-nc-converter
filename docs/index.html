@@ -5,13 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SHINX Motion Viewer</title>
     <link rel="stylesheet" href="./style.css" />
-    <script type="importmap">
-      {
-        "imports": {
-          "three": "https://unpkg.com/three@0.165.0/build/three.module.js"
-        }
-      }
-    </script>
   </head>
   <body>
     <header class="topbar">
@@ -33,14 +26,23 @@
         <button id="prevBtn" title="1行戻る"><<</button>
         <button id="nextBtn" title="1行送り">>></button>
         <select id="speedSelect" title="再生速度">
-          <option value="0.25">0.25×</option>
-          <option value="0.5">0.5×</option>
           <option value="1" selected>1×</option>
-          <option value="2">2×</option>
           <option value="5">5×</option>
           <option value="10">10×</option>
+          <option value="50">50×</option>
           <option value="100">100×</option>
+          <option value="500">500×</option>
+          <option value="1000">1000×</option>
+          <option value="max">MAX</option>
         </select>
+      </div>
+
+      <div class="jumpbar">
+        <button id="jumpStartBtn" title="最初の加工開始へ">加工開始</button>
+        <button id="jumpToolBtn" title="次の工具交換へ">工具交換</button>
+        <button id="jumpWarnBtn" title="次の警告へ">警告</button>
+        <button id="jumpMinZBtn" title="最深Zへ">最深Z</button>
+        <button id="jumpEndBtn" title="最後へ">最後</button>
       </div>
 
       <div class="now-line">
@@ -51,12 +53,16 @@
     </header>
 
     <main class="motion-layout">
-      <section class="motion-panel">
+      <section class="xy-main-panel">
         <div class="panel-title">
-          <h2>SHINX Motion Viewer</h2>
+          <h2>XY Motion</h2>
           <div id="viewerStatus" class="status">NC未読込</div>
+          <div class="toggle-group">
+            <button id="xyMaterialBtn" class="mini">材料全体</button>
+            <button id="xyWorkBtn" class="mini active">加工範囲</button>
+          </div>
         </div>
-        <div id="threeViewport" class="three-viewport"></div>
+        <canvas id="xyCanvas" width="1100" height="680"></canvas>
         <div class="hud">
           <div><span>X</span><strong id="hudX">0.000</strong></div>
           <div><span>Y</span><strong id="hudY">0.000</strong></div>
@@ -68,11 +74,6 @@
       </section>
 
       <aside class="right-panel">
-        <section class="summary-panel">
-          <h2>自動判定</h2>
-          <div id="summaryGrid" class="summary-grid"></div>
-        </section>
-
         <section class="section-panel">
           <h2>断面 Z</h2>
           <div class="canvas-box">
@@ -80,17 +81,9 @@
           </div>
         </section>
 
-        <section class="section-panel">
-          <div class="panel-row">
-            <h2>XY</h2>
-            <div class="toggle-group">
-              <button id="xyMaterialBtn" class="mini active">材料</button>
-              <button id="xyWorkBtn" class="mini">加工</button>
-            </div>
-          </div>
-          <div class="canvas-box small">
-            <canvas id="xyCanvas" width="360" height="220"></canvas>
-          </div>
+        <section class="summary-panel">
+          <h2>自動判定</h2>
+          <div id="summaryGrid" class="summary-grid"></div>
         </section>
 
         <section class="safety-panel">
