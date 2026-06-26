@@ -136,6 +136,20 @@ function getWords(line) {
   return found;
 }
 
+function ijkToRadius(lineWords, plane) {
+  const values = Object.fromEntries(lineWords);
+  if (values.R !== undefined) return null;
+  const planeMap = {
+    G17: { axes: ["X", "Y"], offsets: ["I", "J"] },
+    G18: { axes: ["X", "Z"], offsets: ["I", "K"] },
+    G19: { axes: ["Y", "Z"], offsets: ["J", "K"] },
+  };
+  const map = planeMap[plane] || planeMap.G17;
+  if (!map.axes.some((axis) => values[axis] !== undefined)) return null;
+  if (!map.offsets.some((offset) => values[offset] !== undefined)) return null;
+  return Math.hypot(...map.offsets.map((offset) => values[offset] || 0));
+}
+
 function parseProgram(text) {
   const cleanLines = [];
   const bodyLines = [];
@@ -144,6 +158,8 @@ function parseProgram(text) {
   const spindleSpeeds = [];
   const ranges = { min_x: null, max_x: null, min_y: null, max_y: null, min_z: null, max_z: null };
   const modal = { distance: null, motion: null };
+  let currentPlane = "G17";
+  let convertedArcCount = 0;
 
   text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").forEach((raw) => {
     const clean = normalizeLine(raw);
@@ -165,7 +181,17 @@ function parseProgram(text) {
       return;
     }
 
+    let lineMotion = modal.motion;
+    lineWords.forEach(([letter, value]) => {
+      if (letter !== "G") return;
+      const code = Math.trunc(value);
+      if ([2, 3].includes(code)) lineMotion = `G${String(code).padStart(2, "0")}`;
+      if ([17, 18, 19].includes(code)) currentPlane = `G${code}`;
+    });
+    const arcRadius = ["G02", "G03"].includes(lineMotion) ? ijkToRadius(lineWords, currentPlane) : null;
+
     const kept = [];
+    let insertedRadius = false;
     lineWords.forEach(([letter, value]) => {
       if (letter === "G") {
         const code = Math.trunc(value);
@@ -174,6 +200,7 @@ function parseProgram(text) {
         if ([0, 1, 2, 3].includes(code)) modal.motion = `G${String(code).padStart(2, "0")}`;
         if ([90, 91].includes(code)) modal.distance = `G${code}`;
       } else if (["X", "Y", "Z", "I", "J", "K", "R"].includes(letter)) {
+        if (arcRadius !== null && ["I", "J", "K"].includes(letter)) return;
         kept.push(`${letter}${value.toFixed(3)}`);
         const axis = letter.toLowerCase();
         if (!["i", "j", "k", "r"].includes(axis)) {
@@ -183,11 +210,21 @@ function parseProgram(text) {
           ranges[maxKey] = ranges[maxKey] === null ? value : Math.max(ranges[maxKey], value);
         }
       } else if (letter === "F") {
+        if (arcRadius !== null && !insertedRadius) {
+          kept.push(`R${arcRadius.toFixed(3)}`);
+          insertedRadius = true;
+        }
         kept.push(`F${formatNumber(value)}`);
       } else if (letter === "S") {
         kept.push(`S${Math.trunc(value)}`);
       }
     });
+
+    if (arcRadius !== null && !insertedRadius) {
+      kept.push(`R${arcRadius.toFixed(3)}`);
+      insertedRadius = true;
+    }
+    if (insertedRadius) convertedArcCount += 1;
 
     if (kept.length && kept.some((item) => /^[GXYZRFS]/.test(item))) {
       bodyLines.push(kept.join(" "));
@@ -196,7 +233,7 @@ function parseProgram(text) {
     }
   });
 
-  return { cleanLines, bodyLines, removedLines, tools, spindleSpeeds, ranges, modal };
+  return { cleanLines, bodyLines, removedLines, tools, spindleSpeeds, ranges, modal, convertedArcCount };
 }
 
 function formatNumber(value) {
@@ -322,6 +359,7 @@ function convertText(text, config) {
       removed_lines: parsed.removedLines,
       inserted_shinx_codes: ["M06/M95/G53/M92", `T${shinxTool}`, "G65 P9000 L1", "M23/M03/S/G04", "G92 原点補正", "G218/G219", "G65 P9900 L1", "M30"],
       body_line_count: parsed.bodyLines.length,
+      converted_arc_count: parsed.convertedArcCount,
     },
   };
 }
@@ -348,6 +386,7 @@ function renderLog(log) {
     `機械原点: X${log.machine_origin.x} Y${log.machine_origin.y}`,
     `加工範囲: X ${rangeFmt(ranges.min_x)} .. ${rangeFmt(ranges.max_x)} / Y ${rangeFmt(ranges.min_y)} .. ${rangeFmt(ranges.max_y)} / Z ${rangeFmt(ranges.min_z)} .. ${rangeFmt(ranges.max_z)}`,
     `本文行数: ${log.body_line_count}`,
+    `IJK→R変換: ${log.converted_arc_count || 0} 行`,
     "",
     "警告:",
     `<span class="warning">${warnings}</span>`,

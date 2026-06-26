@@ -96,6 +96,7 @@ function renderLog(log) {
     `機械原点: X${log.machine_origin.x} Y${log.machine_origin.y}`,
     `加工範囲: X ${fmt(ranges.min_x)} .. ${fmt(ranges.max_x)} / Y ${fmt(ranges.min_y)} .. ${fmt(ranges.max_y)} / Z ${fmt(ranges.min_z)} .. ${fmt(ranges.max_z)}`,
     `本文行数: ${log.body_line_count}`,
+    `IJK→R変換: ${log.converted_arc_count || 0} 行`,
     "",
     "警告:",
     `<span class="warning">${warnings}</span>`,

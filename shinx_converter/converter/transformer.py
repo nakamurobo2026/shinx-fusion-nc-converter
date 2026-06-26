@@ -42,5 +42,6 @@ def convert(text: str, config: dict) -> dict:
         "removed_lines": parsed.removed_lines,
         "inserted_shinx_codes": inserted,
         "body_line_count": len(parsed.body_lines),
+        "converted_arc_count": parsed.converted_arc_count,
     }
     return {"output": "\n".join(output_lines) + "\n", "log": log}
