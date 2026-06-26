@@ -21,7 +21,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-zfix2";
+var SHINX_POST_VERSION = "2026-06-26-zdebug1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -98,6 +98,14 @@ properties = {
     value: 31.0,
     scope: "post"
   },
+  debugZLog: {
+    title: "Debug Z log",
+    description: "Output DEBUG comments before every Z-related output for troubleshooting.",
+    group: "shinx",
+    type: "boolean",
+    value: true,
+    scope: "post"
+  },
   useToolMapping: {
     title: "Use tool mapping",
     description: "Map Fusion tool numbers to SHINX magazine tool numbers.",
@@ -165,6 +173,67 @@ function getModalFeedWord(feed) {
   return "F" + formatted;
 }
 
+function debugValue(value) {
+  return value === undefined || value === null ? "NA" : fmt(value);
+}
+
+function debugRawValue(value) {
+  return value === undefined || value === null ? "NA" : String(value);
+}
+
+function getCurrentPositionZForDebug() {
+  try {
+    if (typeof getCurrentPosition == "function") {
+      var position = getCurrentPosition();
+      if (position && position.z !== undefined) {
+        return position.z;
+      }
+    }
+  } catch (e) {
+  }
+  return undefined;
+}
+
+function getSectionInitialZForDebug() {
+  try {
+    if (currentSection) {
+      var initial = getFramePosition(currentSection.getInitialPosition());
+      if (initial && initial.z !== undefined) {
+        return initial.z;
+      }
+    }
+  } catch (e) {
+  }
+  return undefined;
+}
+
+function getWorkOffsetForDebug() {
+  try {
+    if (currentSection && currentSection.workOffset !== undefined) {
+      return currentSection.workOffset;
+    }
+  } catch (e) {
+  }
+  return "NA";
+}
+
+function writeDebugZ(source, rawZ, outputZ, mode) {
+  if (!getProperty("debugZLog")) {
+    return;
+  }
+  writeln("; DEBUG rawZ=" + debugRawValue(rawZ) +
+    " outputZ=" + debugRawValue(outputZ) +
+    " mode=" + mode +
+    " source=" + source +
+    " currentTool=" + debugRawValue(currentFusionTool) +
+    " currentPosition.z=" + debugValue(currentPosition.z) +
+    " getCurrentPosition.z=" + debugValue(getCurrentPositionZForDebug()) +
+    " sectionInitial.z=" + debugValue(getSectionInitialZForDebug()) +
+    " workOffset=" + debugRawValue(getWorkOffsetForDebug()) +
+    " maxDepth=" + debugRawValue(getProperty("maxDepth")) +
+    " materialThickness=NA cutStartDepth=NA");
+}
+
 function writeShinxBlock() {
   var words = [];
   for (var i = 0; i < arguments.length; ++i) {
@@ -218,6 +287,7 @@ function writeOriginSetup() {
   writeShinxBlock("G90 G00", "X" + fmt(getProperty("machineOriginX")), "Y" + fmt(getProperty("machineOriginY")));
   writeShinxBlock("G92", "X 0.000", "Y 0.000");
   writeShinxBlock("M21");
+  writeDebugZ("writeOriginSetup", undefined, getProperty("safeZ"), "G90");
   writeShinxBlock("G90 G00", "Z " + fmt(getProperty("safeZ")));
   originWasResetAfterToolChange = true;
   currentMode = 90;
@@ -229,7 +299,9 @@ function writeCutStart(initial) {
     error("Origin reset sequence is missing before machining start.");
   }
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
+  writeDebugZ("writeCutStart-approach", initial.z, getProperty("approachZ"), "G90");
   writeShinxBlock("G90 G00", "Z" + fmt(getProperty("approachZ")));
+  writeDebugZ("writeCutStart-plunge", initial.z, -getProperty("maxDepth"), "G91");
   writeShinxBlock("G91 G01", "Z-" + fmt(getProperty("maxDepth")), "F" + feedFormat.format(getProperty("plungeFeed")));
   currentFeed = feedFormat.format(getProperty("plungeFeed"));
   currentMode = 91;
@@ -256,6 +328,7 @@ function writeInitialHeader(shinxTool, speed) {
   writeFixedBlock(0, "M06");
   writeFixedBlock(1, "M95");
   writeFixedBlock(2, "G53");
+  writeDebugZ("writeInitialHeader-machineZ0", undefined, 0, "G90");
   writeFixedBlock(3, "G90 G00 Z 0.000");
   writeFixedBlock(4, "M92");
   writeFixedBlock(5, "T" + toolFormat.format(shinxTool));
@@ -271,6 +344,7 @@ function writeInitialHeader(shinxTool, speed) {
 }
 
 function writeToolChange(shinxTool, speed) {
+  writeDebugZ("writeToolChange-retract", undefined, 0, "G90");
   writeShinxBlock("G90 G00", "Z0.000");
   writeShinxBlock("S0 T100");
   writeShinxBlock("M92 M95");
@@ -312,9 +386,13 @@ function shouldIgnoreFusionCutZ(gCode, z) {
   return false;
 }
 
-function writeMotion(gCode, x, y, z, r, feed) {
+function writeMotion(gCode, x, y, z, r, feed, source) {
   var words = [gCode];
   var ignoreZ = shouldIgnoreFusionCutZ(gCode, z);
+  var outputZ = ignoreZ ? undefined : z;
+  if (z !== undefined) {
+    writeDebugZ(source || "writeMotion", z, outputZ, gCode.indexOf("G91") >= 0 ? "G91" : "G90");
+  }
   if (gCode == "G90 G00" && (x !== undefined || y !== undefined) && currentPosition.z < getProperty("approachZ") - 0.001) {
     error("Rapid XY move was requested after Z was lowered. XY positioning must occur at safeZ or approachZ.");
   }
@@ -353,7 +431,7 @@ function writeMotion(gCode, x, y, z, r, feed) {
   writeShinxBlock.apply(null, words);
 }
 
-function writeLinearWithRadiusCompensation(x, y, z, feed) {
+function writeLinearWithRadiusCompensation(x, y, z, feed, source) {
   var comp = "G40";
   if (radiusCompensation == RADIUS_COMPENSATION_LEFT) {
     comp = "G41";
@@ -363,6 +441,10 @@ function writeLinearWithRadiusCompensation(x, y, z, feed) {
 
   var words = ["G90 G01", comp];
   var ignoreZ = shouldIgnoreFusionCutZ("G90 G01", z);
+  var outputZ = ignoreZ ? undefined : z;
+  if (z !== undefined) {
+    writeDebugZ(source || "writeLinearWithRadiusCompensation", z, outputZ, "G90");
+  }
   if (comp != "G40") {
     words.push("D" + dFormat.format(tool.diameterOffset));
   }
@@ -421,6 +503,7 @@ function onSection() {
     writeToolChange(shinxTool, speed);
     currentFusionTool = fusionTool;
   } else {
+    writeDebugZ("onSection-sameToolSafeZ", undefined, getProperty("safeZ"), "G90");
     writeShinxBlock("G90 G00", "Z" + fmt(getProperty("safeZ")));
     currentMode = 90;
     currentPosition.z = getProperty("safeZ");
@@ -436,7 +519,7 @@ function onRapid(x, y, z) {
   if (shouldSkipInitialMove(x, y, z)) {
     return;
   }
-  writeMotion("G90 G00", x, y, z);
+  writeMotion("G90 G00", x, y, z, undefined, undefined, "onRapid");
 }
 
 function onLinear(x, y, z, feed) {
@@ -445,10 +528,10 @@ function onLinear(x, y, z, feed) {
   }
   if (pendingRadiusCompensation >= 0) {
     pendingRadiusCompensation = -1;
-    writeLinearWithRadiusCompensation(x, y, z, feed);
+    writeLinearWithRadiusCompensation(x, y, z, feed, "onLinear-radiusComp");
     return;
   }
-  writeMotion("G90 G01", x, y, z, undefined, feed);
+  writeMotion("G90 G01", x, y, z, undefined, feed, "onLinear");
 }
 
 function onRadiusCompensation() {
@@ -475,8 +558,8 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
   }
   currentPlane = getCircularPlane() == PLANE_ZX ? 18 : (getCircularPlane() == PLANE_YZ ? 19 : 17);
   var r = radiusFromCenter(currentPlane, cx, cy, cz);
-  writeMotion("G" + currentPlane, undefined, undefined, undefined);
-  writeMotion(clockwise ? "G02" : "G03", x, y, z, r, feed);
+  writeMotion("G" + currentPlane, undefined, undefined, undefined, undefined, undefined, "onCircular-plane");
+  writeMotion(clockwise ? "G02" : "G03", x, y, z, r, feed, "onCircular");
 }
 
 function onCycle() {
@@ -529,6 +612,7 @@ function onClose() {
     warning("No machining sections were output.");
   }
   writeFixedBlock(9508, "S0 T100");
+  writeDebugZ("onClose-footerRetract", undefined, 0, "G90");
   writeFixedBlock(9509, "G90 G00 Z 0.000");
   writeFixedBlock(9510, "G219");
   writeFixedBlock(9511, "G04 X1.0");
