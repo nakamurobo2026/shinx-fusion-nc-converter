@@ -21,6 +21,8 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
+var SHINX_POST_VERSION = "2026-06-26-zfix2";
+
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
 minimumChordLength = spatial(0.25, MM);
@@ -395,6 +397,7 @@ function writeLinearWithRadiusCompensation(x, y, z, feed) {
 
 function onOpen() {
   writeln("%");
+  writeln("(SHINX_20ZXGN_POST " + SHINX_POST_VERSION + ")");
   if (getProperty("machiningFace") == 8) {
     // Face 8 defaults are defined in the post properties.
   }
