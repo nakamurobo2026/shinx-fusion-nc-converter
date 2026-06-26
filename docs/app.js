@@ -26,6 +26,12 @@ const $ = (id) => document.getElementById(id);
 
 let config = loadConfig();
 let analysis = null;
+let analyzeTimer = null;
+let selectedLine = null;
+let previewMode = "material";
+const xyView = { scale: 1, offsetX: 0, offsetY: 0, initialized: false, hitItems: [] };
+const zView = { hitItems: [] };
+const panState = { active: false, x: 0, y: 0 };
 
 function loadConfig() {
   try {
@@ -311,6 +317,7 @@ function analyzeNc(text, cfg) {
         if (dz < 0) stats.zDown += Math.abs(dz);
         if (dz > 0) stats.zUp += dz;
       }
+      const dz = after.z - before.z;
       const len = distance(before, after);
       const feed = state.f || 0;
       const minutes = feed > 0 && gCode !== "G00" ? len / feed : 0;
@@ -320,13 +327,19 @@ function analyzeNc(text, cfg) {
       updateToolRange(toolInfo, after);
       segments.push({
         line: lineNumber,
+        raw,
         type: gCode,
+        mode: state.mode,
         from: before,
         to: after,
+        f: state.f,
+        s: state.s,
+        t: state.t,
+        tool: state.tool || "",
         warning: warnings.length > 0,
       });
       updateRange(after);
-      zTrace.push({ line: lineNumber, z: after.z, warning: warnings.length > 0 });
+      zTrace.push({ line: lineNumber, z: after.z, dz, mode: state.mode, warning: warnings.length > 0, f: state.f, s: state.s, t: state.t, tool: state.tool || "" });
     }
 
     warnings.forEach((message) => {
@@ -426,7 +439,7 @@ function renderTools(result) {
 function renderRows(result) {
   $("lineCount").textContent = `${result.rows.length} 行`;
   $("coordTable").querySelector("tbody").innerHTML = result.rows.map((row) => `
-    <tr class="${row.warnings.length ? "warn-row" : ""}">
+    <tr data-line="${row.line}" class="${row.warnings.length ? "warn-row" : ""} ${selectedLine === row.line ? "selected-row" : ""}">
       <td>${row.line}</td>
       <td title="${escapeHtml(row.raw)}">${escapeHtml(row.raw)}</td>
       <td>${row.gCode || "-"}</td>
@@ -443,61 +456,175 @@ function renderRows(result) {
   `).join("");
 }
 
-function drawXY(result) {
+function resizeCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const width = Math.max(320, Math.round(rect.width || canvas.width));
+  const height = Math.max(180, Math.round(rect.height || canvas.height));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return { width, height };
+}
+
+function machiningBounds(result) {
+  const xs = result.segments.flatMap((s) => [s.from.x, s.to.x]);
+  const ys = result.segments.flatMap((s) => [s.from.y, s.to.y]);
+  if (!xs.length || !ys.length) {
+    return { minX: 0, maxX: config.materialX, minY: 0, maxY: config.materialY };
+  }
+  return {
+    minX: Math.min(...xs),
+    maxX: Math.max(...xs),
+    minY: Math.min(...ys),
+    maxY: Math.max(...ys),
+  };
+}
+
+function xyBaseBounds(result) {
+  if (previewMode === "work") {
+    const b = machiningBounds(result);
+    const pad = Math.max(5, Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.12);
+    return { minX: b.minX - pad, maxX: b.maxX + pad, minY: b.minY - pad, maxY: b.maxY + pad };
+  }
+  return {
+    minX: Math.min(0, result.stats.minX ?? 0),
+    maxX: Math.max(config.materialX, result.stats.maxX ?? config.materialX),
+    minY: Math.min(0, result.stats.minY ?? 0),
+    maxY: Math.max(config.materialY, result.stats.maxY ?? config.materialY),
+  };
+}
+
+function resetXYView(result = analysis) {
+  if (!result) return;
+  const canvas = $("xyCanvas");
+  const { width, height } = resizeCanvas(canvas);
+  const b = xyBaseBounds(result);
+  const pad = 34;
+  const sx = (width - pad * 2) / Math.max(1, b.maxX - b.minX);
+  const sy = (height - pad * 2) / Math.max(1, b.maxY - b.minY);
+  xyView.scale = Math.max(0.001, Math.min(sx, sy));
+  xyView.offsetX = pad - b.minX * xyView.scale + ((width - pad * 2) - (b.maxX - b.minX) * xyView.scale) / 2;
+  xyView.offsetY = height - pad + b.minY * xyView.scale - ((height - pad * 2) - (b.maxY - b.minY) * xyView.scale) / 2;
+  xyView.initialized = true;
+}
+
+function worldToScreen(point) {
+  return {
+    x: point.x * xyView.scale + xyView.offsetX,
+    y: xyView.offsetY - point.y * xyView.scale,
+  };
+}
+
+function screenToWorld(point) {
+  return {
+    x: (point.x - xyView.offsetX) / xyView.scale,
+    y: (xyView.offsetY - point.y) / xyView.scale,
+  };
+}
+
+function distanceToSegment(point, a, b) {
+  const vx = b.x - a.x;
+  const vy = b.y - a.y;
+  const wx = point.x - a.x;
+  const wy = point.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  const t = len2 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2)) : 0;
+  const px = a.x + t * vx;
+  const py = a.y + t * vy;
+  return Math.hypot(point.x - px, point.y - py);
+}
+
+function drawCross(ctx, point, size, color) {
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(point.x - size, point.y);
+  ctx.lineTo(point.x + size, point.y);
+  ctx.moveTo(point.x, point.y - size);
+  ctx.lineTo(point.x, point.y + size);
+  ctx.stroke();
+}
+
+function drawXY(result, keepView = false) {
   const canvas = $("xyCanvas");
   const ctx = canvas.getContext("2d");
-  const w = canvas.width;
-  const h = canvas.height;
+  const { width: w, height: h } = resizeCanvas(canvas);
+  if (!keepView || !xyView.initialized) resetXYView(result);
+  xyView.hitItems = [];
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, w, h);
 
-  const pad = 34;
-  const xs = [0, config.materialX, ...result.segments.flatMap((s) => [s.from.x, s.to.x])];
-  const ys = [0, config.materialY, ...result.segments.flatMap((s) => [s.from.y, s.to.y])];
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
-  const minY = Math.min(...ys);
-  const maxY = Math.max(...ys);
-  const scale = Math.min((w - pad * 2) / Math.max(1, maxX - minX), (h - pad * 2) / Math.max(1, maxY - minY));
-  const toPx = (p) => ({
-    x: pad + (p.x - minX) * scale,
-    y: h - pad - (p.y - minY) * scale,
-  });
-
-  ctx.strokeStyle = "#d1d5db";
-  ctx.lineWidth = 1;
-  const mat0 = toPx({ x: 0, y: 0 });
-  const mat1 = toPx({ x: config.materialX, y: config.materialY });
+  const mat0 = worldToScreen({ x: 0, y: 0 });
+  const mat1 = worldToScreen({ x: config.materialX, y: config.materialY });
+  ctx.fillStyle = "#f8fafc";
+  ctx.fillRect(mat0.x, mat1.y, mat1.x - mat0.x, mat0.y - mat1.y);
+  ctx.strokeStyle = "#8b95a1";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
   ctx.strokeRect(mat0.x, mat1.y, mat1.x - mat0.x, mat0.y - mat1.y);
 
+  const b = machiningBounds(result);
+  const r0 = worldToScreen({ x: b.minX, y: b.minY });
+  const r1 = worldToScreen({ x: b.maxX, y: b.maxY });
+  ctx.strokeStyle = "#9333ea";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([7, 5]);
+  ctx.strokeRect(r0.x, r1.y, r1.x - r0.x, r0.y - r1.y);
+  ctx.setLineDash([]);
+
   result.segments.forEach((seg) => {
-    const a = toPx(seg.from);
-    const b = toPx(seg.to);
+    const a = worldToScreen(seg.from);
+    const b = worldToScreen(seg.to);
+    xyView.hitItems.push({ type: "segment", line: seg.line, segment: seg, a, b });
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.strokeStyle = seg.warning ? "#b91c1c" : seg.type === "G00" ? "#6b7280" : ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
-    ctx.lineWidth = seg.type === "G00" ? 1 : 2;
+    ctx.lineWidth = selectedLine === seg.line ? 5 : seg.type === "G00" ? 1.4 : 2.4;
     ctx.setLineDash(seg.type === "G00" ? [5, 5] : []);
     ctx.stroke();
   });
   ctx.setLineDash([]);
 
   if (result.stats.g92) {
-    const g92 = toPx(result.stats.g92);
-    ctx.fillStyle = "#7c3aed";
+    drawCross(ctx, worldToScreen(result.stats.g92), 10, "#7c3aed");
+  }
+  drawCross(ctx, worldToScreen({ x: 0, y: 0 }), 14, "#111827");
+
+  const machineMarker = worldToScreen({ x: config.machineOriginX, y: config.machineOriginY });
+  const machineVisible = machineMarker.x > -80 && machineMarker.x < w + 80 && machineMarker.y > -80 && machineMarker.y < h + 80;
+  const machineDraw = machineVisible ? machineMarker : { x: 24, y: 24 };
+  ctx.fillStyle = "#dc2626";
+  ctx.beginPath();
+  ctx.moveTo(machineDraw.x, machineDraw.y - 9);
+  ctx.lineTo(machineDraw.x + 9, machineDraw.y);
+  ctx.lineTo(machineDraw.x, machineDraw.y + 9);
+  ctx.lineTo(machineDraw.x - 9, machineDraw.y);
+  ctx.closePath();
+  ctx.fill();
+  if (!machineVisible) {
+    ctx.fillStyle = "#dc2626";
+    ctx.font = "12px Segoe UI";
+    ctx.fillText(`機械原点 X${fmt(config.machineOriginX)} Y${fmt(config.machineOriginY)}`, machineDraw.x + 14, machineDraw.y + 4);
+  }
+
+  if (result.stats.firstMove) {
+    const first = worldToScreen(result.stats.firstMove);
+    ctx.fillStyle = "#111827";
     ctx.beginPath();
-    ctx.arc(g92.x, g92.y, 5, 0, Math.PI * 2);
+    ctx.arc(first.x, first.y, 7, 0, Math.PI * 2);
     ctx.fill();
   }
-  if (result.stats.firstMove) {
-    const first = toPx(result.stats.firstMove);
+  const lastSeg = result.segments[result.segments.length - 1];
+  if (lastSeg) {
+    const end = worldToScreen(lastSeg.to);
     ctx.fillStyle = "#111827";
-    ctx.fillRect(first.x - 4, first.y - 4, 8, 8);
+    ctx.fillRect(end.x - 6, end.y - 6, 12, 12);
   }
   result.toolEvents.forEach((event) => {
-    const p = toPx(event);
+    const p = worldToScreen(event);
     ctx.fillStyle = event.type === "P9000" ? "#f59e0b" : "#dc2626";
     ctx.beginPath();
     ctx.moveTo(p.x, p.y - 7);
@@ -505,6 +632,7 @@ function drawXY(result) {
     ctx.lineTo(p.x - 7, p.y + 7);
     ctx.closePath();
     ctx.fill();
+    xyView.hitItems.push({ type: "tool", line: event.line, event, a: { x: p.x - 10, y: p.y - 10 }, b: { x: p.x + 10, y: p.y + 10 } });
   });
   $("rangeSummary").textContent = `X ${fmt(result.stats.minX)}..${fmt(result.stats.maxX)} / Y ${fmt(result.stats.minY)}..${fmt(result.stats.maxY)}`;
 }
@@ -512,15 +640,15 @@ function drawXY(result) {
 function drawZ(result) {
   const canvas = $("zCanvas");
   const ctx = canvas.getContext("2d");
-  const w = canvas.width;
-  const h = canvas.height;
+  const { width: w, height: h } = resizeCanvas(canvas);
+  zView.hitItems = [];
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, w, h);
   const trace = result.zTrace;
   const minZ = Math.min(result.z.minAllowedZ, result.stats.minZ ?? 0);
   const maxZ = Math.max(result.z.safeZ, result.stats.maxZ ?? result.z.safeZ);
-  const pad = 24;
+  const pad = 30;
   const xFor = (i) => pad + (trace.length <= 1 ? 0 : (i / (trace.length - 1)) * (w - pad * 2));
   const yFor = (z) => h - pad - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - pad * 2);
 
@@ -528,14 +656,21 @@ function drawZ(result) {
     ["safeZ", result.z.safeZ, "#0f766e"],
     ["approachZ", result.z.approachZ, "#2563eb"],
     ["materialTopZ", result.z.materialTopZ, "#111827"],
+    ["最深Z", result.stats.minZ, "#b45309"],
     ["limit", result.z.minAllowedZ, "#b91c1c"],
-  ].forEach(([, z, color]) => {
+  ].forEach(([label, z, color]) => {
+    if (z === null || z === undefined) return;
     ctx.strokeStyle = color;
     ctx.lineWidth = 1;
+    ctx.setLineDash(label === "最深Z" ? [6, 4] : []);
     ctx.beginPath();
     ctx.moveTo(pad, yFor(z));
     ctx.lineTo(w - pad, yFor(z));
     ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = color;
+    ctx.font = "12px Segoe UI";
+    ctx.fillText(label, pad + 4, yFor(z) - 4);
   });
 
   if (trace.length) {
@@ -549,8 +684,125 @@ function drawZ(result) {
     ctx.strokeStyle = "#0f766e";
     ctx.lineWidth = 2;
     ctx.stroke();
+    trace.forEach((point, i) => {
+      const x = xFor(i);
+      const y = yFor(point.z);
+      zView.hitItems.push({ line: point.line, point, x, y });
+      if (point.mode === "G91" && point.dz < 0) {
+        ctx.fillStyle = "#b91c1c";
+        ctx.beginPath();
+        ctx.arc(x, y, selectedLine === point.line ? 6 : 4, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (selectedLine === point.line) {
+        ctx.fillStyle = "#2563eb";
+        ctx.beginPath();
+        ctx.arc(x, y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    });
   }
   $("zRangeSummary").textContent = `最深Z ${fmt(result.stats.minZ)} / 下降 ${fmt(result.stats.zDown)} / 上昇 ${fmt(result.stats.zUp)} / G91累積 ${fmt(result.stats.g91ZTotal)}`;
+}
+
+function setStatus(text, loading = false) {
+  const status = $("analysisStatus");
+  status.textContent = text;
+  status.classList.toggle("loading", loading);
+}
+
+function setPreviewMode(mode) {
+  previewMode = mode;
+  $("fitMaterialBtn").classList.toggle("active", mode === "material");
+  $("fitWorkBtn").classList.toggle("active", mode === "work");
+  xyView.initialized = false;
+  if (analysis) drawXY(analysis);
+}
+
+function rowForLine(line) {
+  return $("coordTable").querySelector(`tbody tr[data-line="${line}"]`);
+}
+
+function highlightLine(line, scroll = false) {
+  selectedLine = line ? Number(line) : null;
+  document.querySelectorAll("#coordTable tbody tr").forEach((row) => {
+    row.classList.toggle("selected-row", Number(row.dataset.line) === selectedLine);
+  });
+  if (scroll && selectedLine) {
+    const row = rowForLine(selectedLine);
+    if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+  if (analysis) {
+    drawXY(analysis, true);
+    drawZ(analysis);
+  }
+}
+
+function segmentTooltip(segment) {
+  return [
+    `行 ${segment.line} ${segment.type} ${segment.mode}`,
+    `X ${fmt(segment.to.x)}  Y ${fmt(segment.to.y)}  Z ${fmt(segment.to.z)}`,
+    `F ${fmt(segment.f, 0)}  S ${fmt(segment.s, 0)}  T ${fmt(segment.t, 0)}`,
+  ].join("\n");
+}
+
+function showTooltip(id, event, text) {
+  const tip = $(id);
+  const rect = event.currentTarget.getBoundingClientRect();
+  tip.textContent = text;
+  tip.hidden = false;
+  tip.style.left = `${event.clientX - rect.left + 12}px`;
+  tip.style.top = `${event.clientY - rect.top + 12}px`;
+}
+
+function hideTooltip(id) {
+  $(id).hidden = true;
+}
+
+function nearestXYHit(event) {
+  if (!analysis) return null;
+  const rect = $("xyCanvas").getBoundingClientRect();
+  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  let best = null;
+  xyView.hitItems.forEach((item) => {
+    let d = Infinity;
+    if (item.type === "segment") {
+      d = distanceToSegment(point, item.a, item.b);
+    } else if (item.type === "tool") {
+      d = point.x >= item.a.x && point.x <= item.b.x && point.y >= item.a.y && point.y <= item.b.y ? 0 : Infinity;
+    }
+    if (d < 9 && (!best || d < best.distance)) {
+      best = { ...item, distance: d };
+    }
+  });
+  return best;
+}
+
+function nearestZHit(event) {
+  if (!analysis) return null;
+  const rect = $("zCanvas").getBoundingClientRect();
+  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  let best = null;
+  zView.hitItems.forEach((item) => {
+    const d = Math.hypot(point.x - item.x, point.y - item.y);
+    if (d < 10 && (!best || d < best.distance)) {
+      best = { ...item, distance: d };
+    }
+  });
+  return best;
+}
+
+function scheduleAnalyze() {
+  clearTimeout(analyzeTimer);
+  if (!$("ncInput").value.trim()) {
+    setStatus("待機中");
+    return;
+  }
+  setStatus("解析待ち", true);
+  analyzeTimer = setTimeout(() => {
+    setStatus("解析中", true);
+    const run = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
+    run(() => analyze());
+  }, 300);
 }
 
 function renderAnalysis(result) {
@@ -563,11 +815,29 @@ function renderAnalysis(result) {
   $("jsonBtn").disabled = false;
   $("coordCsvBtn").disabled = false;
   $("checkCsvBtn").disabled = false;
+  setStatus(`解析済み ${result.rows.length}行`);
 }
 
 function analyze() {
   saveConfig();
+  clearTimeout(analyzeTimer);
+  if (!$("ncInput").value.trim()) {
+    analysis = null;
+    renderZSummary();
+    $("lineCount").textContent = "0 行";
+    $("coordTable").querySelector("tbody").innerHTML = "";
+    $("checkSummary").innerHTML = "";
+    $("checkList").innerHTML = "";
+    $("toolList").innerHTML = "";
+    $("jsonBtn").disabled = true;
+    $("coordCsvBtn").disabled = true;
+    $("checkCsvBtn").disabled = true;
+    setStatus("待機中");
+    return;
+  }
   analysis = analyzeNc($("ncInput").value, config);
+  selectedLine = null;
+  xyView.initialized = false;
   renderAnalysis(analysis);
 }
 
@@ -613,6 +883,7 @@ function readFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
     $("ncInput").value = reader.result;
+    setStatus("解析中", true);
     analyze();
   };
   reader.readAsText(file);
@@ -620,9 +891,16 @@ function readFile(file) {
 
 function bindEvents() {
   $("analyzeBtn").addEventListener("click", analyze);
+  $("ncInput").addEventListener("input", scheduleAnalyze);
   $("jsonBtn").addEventListener("click", downloadJson);
   $("coordCsvBtn").addEventListener("click", downloadCoordCsv);
   $("checkCsvBtn").addEventListener("click", downloadCheckCsv);
+  $("fitMaterialBtn").addEventListener("click", () => setPreviewMode("material"));
+  $("fitWorkBtn").addEventListener("click", () => setPreviewMode("work"));
+  $("coordTable").querySelector("tbody").addEventListener("click", (event) => {
+    const row = event.target.closest("tr[data-line]");
+    if (row) highlightLine(row.dataset.line);
+  });
   $("fileInput").addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     if (file) readFile(file);
@@ -639,7 +917,7 @@ function bindEvents() {
     $(name).addEventListener("change", () => {
       saveConfig();
       renderZSummary();
-      if ($("ncInput").value.trim()) analyze();
+      if ($("ncInput").value.trim()) scheduleAnalyze();
     });
   });
   const dropZone = $("dropZone");
@@ -659,8 +937,75 @@ function bindEvents() {
     const file = event.dataTransfer.files?.[0];
     if (file) readFile(file);
   });
+  const xyCanvas = $("xyCanvas");
+  xyCanvas.addEventListener("wheel", (event) => {
+    if (!analysis) return;
+    event.preventDefault();
+    const rect = xyCanvas.getBoundingClientRect();
+    const mouse = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+    const before = screenToWorld(mouse);
+    const zoom = event.deltaY < 0 ? 1.15 : 0.87;
+    xyView.scale *= zoom;
+    xyView.offsetX = mouse.x - before.x * xyView.scale;
+    xyView.offsetY = mouse.y + before.y * xyView.scale;
+    drawXY(analysis, true);
+  });
+  xyCanvas.addEventListener("mousedown", (event) => {
+    panState.active = true;
+    panState.x = event.clientX;
+    panState.y = event.clientY;
+  });
+  window.addEventListener("mouseup", () => {
+    panState.active = false;
+  });
+  window.addEventListener("mousemove", (event) => {
+    if (!panState.active || !analysis) return;
+    xyView.offsetX += event.clientX - panState.x;
+    xyView.offsetY += event.clientY - panState.y;
+    panState.x = event.clientX;
+    panState.y = event.clientY;
+    drawXY(analysis, true);
+  });
+  xyCanvas.addEventListener("dblclick", () => {
+    if (!analysis) return;
+    resetXYView(analysis);
+    drawXY(analysis, true);
+  });
+  xyCanvas.addEventListener("click", (event) => {
+    if (panState.active) return;
+    const hit = nearestXYHit(event);
+    if (hit) highlightLine(hit.line, true);
+  });
+  xyCanvas.addEventListener("mousemove", (event) => {
+    if (panState.active) return;
+    const hit = nearestXYHit(event);
+    if (hit?.segment) {
+      showTooltip("xyTooltip", event, segmentTooltip(hit.segment));
+    } else if (hit?.event) {
+      showTooltip("xyTooltip", event, [`行 ${hit.event.line} ${hit.event.type}`, `T${hit.event.tool || "-"}`, `X ${fmt(hit.event.x)}  Y ${fmt(hit.event.y)}`].join("\n"));
+    } else {
+      hideTooltip("xyTooltip");
+    }
+  });
+  xyCanvas.addEventListener("mouseleave", () => hideTooltip("xyTooltip"));
+
+  const zCanvas = $("zCanvas");
+  zCanvas.addEventListener("mousemove", (event) => {
+    const hit = nearestZHit(event);
+    if (hit) {
+      showTooltip("zTooltip", event, [`行 ${hit.line}`, `Z ${fmt(hit.point.z)}`, `dZ ${fmt(hit.point.dz)}`, `${hit.point.mode} F${fmt(hit.point.f, 0)} S${fmt(hit.point.s, 0)} T${fmt(hit.point.t, 0)}`].join("\n"));
+    } else {
+      hideTooltip("zTooltip");
+    }
+  });
+  zCanvas.addEventListener("click", (event) => {
+    const hit = nearestZHit(event);
+    if (hit) highlightLine(hit.line, true);
+  });
+  zCanvas.addEventListener("mouseleave", () => hideTooltip("zTooltip"));
   window.addEventListener("resize", () => {
     if (analysis) {
+      xyView.initialized = false;
       drawXY(analysis);
       drawZ(analysis);
     }

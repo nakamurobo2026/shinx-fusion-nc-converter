@@ -13,7 +13,7 @@
         <p>Fusion SHINX専用ポスト出力NCの確認ビューア</p>
       </div>
       <div class="actions">
-        <a class="download-link" href="https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps?cachebust=8df98be" download="shinx_20zxgn.cps">.cps DL</a>
+        <span id="analysisStatus" class="status-pill">待機中</span>
         <button id="analyzeBtn">解析</button>
         <button id="jsonBtn" disabled>JSON</button>
         <button id="coordCsvBtn" disabled>座標CSV</button>
@@ -95,9 +95,27 @@
       <section class="preview-panel">
         <div class="panel-head">
           <h2>2D XYプレビュー</h2>
-          <span id="rangeSummary"></span>
+          <div class="panel-tools">
+            <button id="fitMaterialBtn" class="tool-btn active" type="button">材料全体</button>
+            <button id="fitWorkBtn" class="tool-btn" type="button">加工範囲</button>
+            <span id="rangeSummary"></span>
+          </div>
         </div>
-        <canvas id="xyCanvas" width="900" height="420"></canvas>
+        <div class="canvas-wrap">
+          <canvas id="xyCanvas" width="900" height="420"></canvas>
+          <div id="xyTooltip" class="canvas-tooltip" hidden></div>
+        </div>
+        <div class="legend">
+          <span><i class="legend-material"></i>材料外形</span>
+          <span><i class="legend-range"></i>加工範囲</span>
+          <span><i class="legend-rapid"></i>G00 早送り</span>
+          <span><i class="legend-cut"></i>G01 切削</span>
+          <span><i class="legend-arc"></i>G02/G03 円弧</span>
+          <span><i class="legend-origin"></i>原点</span>
+          <span><i class="legend-start"></i>開始点</span>
+          <span><i class="legend-end"></i>終了点</span>
+          <span><i class="legend-tool"></i>工具交換</span>
+        </div>
       </section>
 
       <section class="z-panel">
@@ -105,7 +123,10 @@
           <h2>Zビュー</h2>
           <span id="zRangeSummary"></span>
         </div>
-        <canvas id="zCanvas" width="900" height="220"></canvas>
+        <div class="canvas-wrap">
+          <canvas id="zCanvas" width="900" height="220"></canvas>
+          <div id="zTooltip" class="canvas-tooltip" hidden></div>
+        </div>
       </section>
     </main>
 
