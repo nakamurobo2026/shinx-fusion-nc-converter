@@ -1,89 +1,52 @@
-const DEFAULT_CONFIG = {
-  materialThickness: 30,
-  safeClearance: 20,
-  approachClearance: 5,
-  allowOvercut: 1,
-  materialX: 300,
-  materialY: 300,
-  machineOriginX: -1303.52,
-  machineOriginY: -2610.91,
-  machiningFace: 8,
-  faces: {
-    1: { name: "加工面1", machineOriginX: 0, machineOriginY: 0 },
-    2: { name: "加工面2", machineOriginX: 0, machineOriginY: 0 },
-    3: { name: "加工面3", machineOriginX: 0, machineOriginY: 0 },
-    4: { name: "加工面4", machineOriginX: 0, machineOriginY: 0 },
-    5: { name: "加工面5", machineOriginX: 0, machineOriginY: 0 },
-    6: { name: "加工面6", machineOriginX: 0, machineOriginY: 0 },
-    7: { name: "加工面7", machineOriginX: 0, machineOriginY: 0 },
-    8: { name: "加工面8", machineOriginX: -1303.52, machineOriginY: -2610.91 },
-  },
+import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
+import { OrbitControls } from "https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js";
+
+const $ = (id) => document.getElementById(id);
+const fmt = (value, digits = 3) => value === null || value === undefined || Number.isNaN(value) ? "-" : Number(value).toFixed(digits);
+
+const state = {
+  analysis: emptyAnalysis(),
+  index: 0,
+  playing: false,
+  speed: 1,
+  lastFrame: 0,
+  xyMode: "material",
 };
 
-const STORAGE_KEY = "shinx_nc_viewer_config";
-const fields = ["materialThickness", "safeClearance", "approachClearance", "allowOvercut", "materialX", "materialY", "machineOriginX", "machineOriginY"];
-const $ = (id) => document.getElementById(id);
+let scene;
+let camera;
+let renderer;
+let controls;
+let stockMesh;
+let rangeBox;
+let toolMesh;
+let pathGroup;
+let markerGroup;
+let animationId;
 
-let config = loadConfig();
-let analysis = null;
-let analyzeTimer = null;
-let selectedLine = null;
-let previewMode = "material";
-const xyView = { scale: 1, offsetX: 0, offsetY: 0, initialized: false, hitItems: [] };
-const zView = { hitItems: [] };
-const panState = { active: false, x: 0, y: 0 };
-
-function loadConfig() {
-  try {
-    return { ...structuredClone(DEFAULT_CONFIG), ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
-  } catch {
-    return structuredClone(DEFAULT_CONFIG);
-  }
-}
-
-function saveConfig() {
-  config = collectConfig();
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-}
-
-function renderConfig() {
-  fields.forEach((name) => {
-    $(name).value = config[name] ?? "";
-  });
-  const faceSelect = $("machiningFace");
-  faceSelect.innerHTML = "";
-  Object.entries(config.faces || DEFAULT_CONFIG.faces).forEach(([key, face]) => {
-    const option = document.createElement("option");
-    option.value = key;
-    option.textContent = `${key}: ${face.name || "加工面" + key}`;
-    faceSelect.appendChild(option);
-  });
-  faceSelect.value = String(config.machiningFace || 8);
-  renderZSummary();
-}
-
-function collectConfig() {
-  const next = { ...config };
-  fields.forEach((name) => {
-    next[name] = Number($(name).value);
-  });
-  next.machiningFace = Number($("machiningFace").value);
-  return next;
-}
-
-function zValues() {
+function emptyAnalysis() {
   return {
-    materialTopZ: config.materialThickness,
-    safeZ: config.materialThickness + config.safeClearance,
-    approachZ: config.materialThickness + config.approachClearance,
-    materialBottomZ: 0,
-    minAllowedZ: -config.allowOvercut,
+    rows: [],
+    motionRows: [],
+    segments: [],
+    tools: [],
+    toolEvents: [],
+    safety: [],
+    inferred: {
+      face: "8面",
+      materialX: 300,
+      materialY: 300,
+      materialThickness: 0,
+      safeZ: 0,
+      approachZ: 0,
+      materialTopZ: 0,
+      materialBottomZ: 0,
+      machineOrigin: { x: 0, y: 0 },
+      workOrigin: { x: 0, y: 0, z: 0 },
+      minZ: 0,
+      timeSeconds: 0,
+    },
   };
-}
-
-function fmt(value, digits = 3) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "-";
-  return Number(value).toFixed(digits);
 }
 
 function cleanLine(line) {
@@ -101,916 +64,711 @@ function wordsFromLine(line) {
   return words;
 }
 
-function normalizeMotion(value) {
+function gName(value) {
   return `G${String(Math.trunc(value)).padStart(2, "0")}`;
 }
 
-function isMotion(g) {
-  return ["G00", "G01", "G02", "G03"].includes(g);
+function dist(a, b) {
+  return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
 }
 
-function distance(a, b) {
-  return Math.hypot((b.x ?? a.x) - a.x, (b.y ?? a.y) - a.y, (b.z ?? a.z) - a.z);
-}
-
-function analyzeNc(text, cfg) {
+function analyzeNc(text) {
   const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
-  const programUsesG92 = lines.some((line) => /G\s*92(?!\d)/i.test(line));
   const rows = [];
-  const checks = [];
-  const tools = new Map();
-  const toolEvents = [];
+  const motionRows = [];
   const segments = [];
-  const zTrace = [];
-  const modeHistory = [];
-  const state = {
-    x: 0,
-    y: 0,
-    z: 0,
-    f: null,
-    s: null,
-    t: null,
-    tool: null,
-    motion: null,
-    mode: "G90",
-    plane: "G17",
-    hasG92: false,
-    hasM21: false,
-    hasP9000: false,
-    hasP9900: false,
-    hasG218: false,
-    hasG219: false,
-    hasM92: false,
-    hasM95: false,
-    spindleOn: false,
-    toolLoaded: false,
+  const toolEvents = [];
+  const safety = [];
+  const toolMap = new Map();
+  const stateNc = {
+    x: 0, y: 0, z: 0, f: null, s: null, t: null, tool: null,
+    mode: "G90", motion: null, spindle: false, toolLoaded: false,
+    hasG92: false, hasM21: false, hasP9000: false, hasP9900: false,
+    hasG218: false, hasG219: false, hasM92: false, hasM95: false,
   };
-  const stats = {
+  const inferred = {
+    face: "8面",
+    materialX: 300,
+    materialY: 300,
+    materialThickness: null,
+    safeZ: null,
+    approachZ: null,
+    materialTopZ: null,
+    materialBottomZ: null,
+    machineOrigin: { x: 0, y: 0 },
+    workOrigin: { x: 0, y: 0, z: 0 },
     minX: null, maxX: null, minY: null, maxY: null, minZ: null, maxZ: null,
-    zDown: 0, zUp: 0, g91ZTotal: 0,
-    firstMove: null,
-    g92: null,
-    estimatedMinutes: 0,
+    start: null,
+    end: null,
+    timeSeconds: 0,
+  };
+  let lastMachineMove = { x: 0, y: 0, z: 0 };
+  let sawG92 = false;
+  let firstPlungeDone = false;
+  let activeMotionIndex = -1;
+
+  const addSafety = (level, line, message) => safety.push({ level, line, message });
+  const toolInfo = () => {
+    const key = stateNc.tool || stateNc.t || "未取得";
+    if (!toolMap.has(key)) {
+      toolMap.set(key, { tool: key, p9000: null, p9900: null, spindle: null, count: 0, minZ: null, warnings: 0 });
+    }
+    return toolMap.get(key);
+  };
+  const updateBounds = (p) => {
+    inferred.minX = inferred.minX === null ? p.x : Math.min(inferred.minX, p.x);
+    inferred.maxX = inferred.maxX === null ? p.x : Math.max(inferred.maxX, p.x);
+    inferred.minY = inferred.minY === null ? p.y : Math.min(inferred.minY, p.y);
+    inferred.maxY = inferred.maxY === null ? p.y : Math.max(inferred.maxY, p.y);
+    inferred.minZ = inferred.minZ === null ? p.z : Math.min(inferred.minZ, p.z);
+    inferred.maxZ = inferred.maxZ === null ? p.z : Math.max(inferred.maxZ, p.z);
   };
 
-  function addCheck(severity, line, message) {
-    checks.push({ severity, line, message });
-  }
-
-  function updateRange(pos) {
-    stats.minX = stats.minX === null ? pos.x : Math.min(stats.minX, pos.x);
-    stats.maxX = stats.maxX === null ? pos.x : Math.max(stats.maxX, pos.x);
-    stats.minY = stats.minY === null ? pos.y : Math.min(stats.minY, pos.y);
-    stats.maxY = stats.maxY === null ? pos.y : Math.max(stats.maxY, pos.y);
-    stats.minZ = stats.minZ === null ? pos.z : Math.min(stats.minZ, pos.z);
-    stats.maxZ = stats.maxZ === null ? pos.z : Math.max(stats.maxZ, pos.z);
-  }
-
-  function currentTool() {
-    const key = state.tool || state.t || "未取得";
-    if (!tools.has(key)) {
-      tools.set(key, {
-        tool: key,
-        p9000Line: null,
-        p9900Line: null,
-        spindle: null,
-        minX: null, maxX: null, minY: null, maxY: null, minZ: null, maxZ: null,
-        estimatedMinutes: 0,
-        warnings: 0,
-      });
-    }
-    return tools.get(key);
-  }
-
-  function updateToolRange(toolInfo, pos) {
-    toolInfo.minX = toolInfo.minX === null ? pos.x : Math.min(toolInfo.minX, pos.x);
-    toolInfo.maxX = toolInfo.maxX === null ? pos.x : Math.max(toolInfo.maxX, pos.x);
-    toolInfo.minY = toolInfo.minY === null ? pos.y : Math.min(toolInfo.minY, pos.y);
-    toolInfo.maxY = toolInfo.maxY === null ? pos.y : Math.max(toolInfo.maxY, pos.y);
-    toolInfo.minZ = toolInfo.minZ === null ? pos.z : Math.min(toolInfo.minZ, pos.z);
-    toolInfo.maxZ = toolInfo.maxZ === null ? pos.z : Math.max(toolInfo.maxZ, pos.z);
-  }
-
-  lines.forEach((raw, index) => {
-    const lineNumber = index + 1;
+  lines.forEach((raw, i) => {
+    const line = i + 1;
     const cleaned = cleanLine(raw).toUpperCase().replace(/\s+/g, " ").trim();
     if (!cleaned || cleaned === "%") return;
     const words = wordsFromLine(cleaned);
-    const before = { x: state.x, y: state.y, z: state.z };
-    const warnings = [];
-    let gCode = state.motion || "";
+    const before = { x: stateNc.x, y: stateNc.y, z: stateNc.z };
+    let isDwell = false;
+    let hasAxis = false;
     let hasMoveAxis = false;
-    let hasXY = false;
-    let hasZ = false;
     let hasG92Line = false;
-    let isDwellLine = false;
     let pCode = null;
     let mCodes = [];
-    let oNumber = null;
     let nNumber = null;
+    let oNumber = null;
 
     words.forEach(({ letter, value }) => {
-      if (letter === "O") oNumber = Math.trunc(value);
       if (letter === "N") nNumber = Math.trunc(value);
+      if (letter === "O") oNumber = Math.trunc(value);
       if (letter === "P") pCode = Math.trunc(value);
       if (letter === "M") mCodes.push(Math.trunc(value));
       if (letter === "G") {
         const code = Math.trunc(value);
-        if ([0, 1, 2, 3].includes(code)) {
-          state.motion = normalizeMotion(code);
-          gCode = state.motion;
-        } else if (code === 4) {
-          isDwellLine = true;
-          gCode = "G04";
-        } else if (code === 90 || code === 91) {
-          const nextMode = `G${code}`;
-          if (state.mode !== nextMode) {
-            modeHistory.push({ line: lineNumber, from: state.mode, to: nextMode });
-          }
-          state.mode = nextMode;
-        } else if ([17, 18, 19].includes(code)) {
-          state.plane = `G${code}`;
-        } else if (code === 92) {
-          state.hasG92 = true;
+        if ([0, 1, 2, 3].includes(code)) stateNc.motion = gName(code);
+        else if (code === 4) isDwell = true;
+        else if (code === 90 || code === 91) stateNc.mode = `G${code}`;
+        else if (code === 92) {
           hasG92Line = true;
-        } else if (code === 218) {
-          state.hasG218 = true;
-        } else if (code === 219) {
-          state.hasG219 = true;
-        }
+          stateNc.hasG92 = true;
+          sawG92 = true;
+        } else if (code === 218) stateNc.hasG218 = true;
+        else if (code === 219) stateNc.hasG219 = true;
       }
     });
 
     words.forEach(({ letter, value }) => {
-      if (letter === "F") state.f = value;
+      if (letter === "F") stateNc.f = value;
       if (letter === "S") {
-        state.s = value;
-        if (value > 0) state.spindleOn = true;
-        if (value === 0) state.spindleOn = false;
-        currentTool().spindle = value > 0 ? value : currentTool().spindle;
+        stateNc.s = value;
+        stateNc.spindle = value > 0;
+        if (value > 0) toolInfo().spindle = value;
       }
-      if (letter === "T") {
-        state.t = Math.trunc(value);
-      }
+      if (letter === "T") stateNc.t = Math.trunc(value);
     });
 
-    if (mCodes.includes(21)) state.hasM21 = true;
-    if (mCodes.includes(23)) state.spindleOn = true;
-    if (mCodes.includes(23)) currentTool().spindle = state.s;
-    if (mCodes.includes(92)) state.hasM92 = true;
-    if (mCodes.includes(95)) state.hasM95 = true;
-    if (mCodes.includes(3)) state.spindleOn = true;
-    if (mCodes.includes(5)) state.spindleOn = false;
+    if (mCodes.includes(3) || mCodes.includes(23)) stateNc.spindle = true;
+    if (mCodes.includes(5)) stateNc.spindle = false;
+    if (mCodes.includes(21)) stateNc.hasM21 = true;
+    if (mCodes.includes(92)) stateNc.hasM92 = true;
+    if (mCodes.includes(95)) stateNc.hasM95 = true;
 
     if (cleaned.includes("G65") && pCode === 9000) {
-      state.hasP9000 = true;
-      state.toolLoaded = true;
-      state.tool = state.t || state.tool;
-      currentTool().p9000Line = lineNumber;
-      toolEvents.push({ type: "P9000", line: lineNumber, x: state.x, y: state.y, tool: state.tool || state.t || "" });
+      stateNc.hasP9000 = true;
+      stateNc.toolLoaded = true;
+      stateNc.tool = stateNc.t || stateNc.tool;
+      toolInfo().p9000 = line;
+      toolEvents.push({ line, type: "P9000", x: stateNc.x, y: stateNc.y, z: stateNc.z, tool: stateNc.tool });
     }
     if (cleaned.includes("G65") && pCode === 9900) {
-      state.hasP9900 = true;
-      currentTool().p9900Line = lineNumber;
-      toolEvents.push({ type: "P9900", line: lineNumber, x: state.x, y: state.y, tool: state.tool || state.t || "" });
-      state.toolLoaded = false;
+      stateNc.hasP9900 = true;
+      toolInfo().p9900 = line;
+      toolEvents.push({ line, type: "P9900", x: stateNc.x, y: stateNc.y, z: stateNc.z, tool: stateNc.tool });
+      stateNc.toolLoaded = false;
     }
 
     words.forEach(({ letter, value }) => {
-      if (!["X", "Y", "Z"].includes(letter)) return;
-      if (isDwellLine) return;
+      if (!["X", "Y", "Z"].includes(letter) || isDwell) return;
+      hasAxis = true;
       if (hasG92Line) {
-        state[letter.toLowerCase()] = value;
+        stateNc[letter.toLowerCase()] = value;
         return;
       }
       hasMoveAxis = true;
-      if (letter === "X") hasXY = true;
-      if (letter === "Y") hasXY = true;
-      if (letter === "Z") hasZ = true;
       const key = letter.toLowerCase();
-      if (state.mode === "G91") {
-        state[key] += value;
-        if (letter === "Z") {
-          stats.g91ZTotal += value;
-        }
-      } else {
-        state[key] = value;
-      }
+      stateNc[key] = stateNc.mode === "G91" ? stateNc[key] + value : value;
     });
 
-    const after = { x: state.x, y: state.y, z: state.z };
+    const after = { x: stateNc.x, y: stateNc.y, z: stateNc.z };
+    if (!sawG92 && hasMoveAxis) lastMachineMove = { ...after };
     if (hasG92Line) {
-      stats.g92 = { line: lineNumber, x: after.x, y: after.y, z: after.z };
+      inferred.machineOrigin = { x: lastMachineMove.x, y: lastMachineMove.y };
+      inferred.workOrigin = { ...after };
     }
-    const inWorkCoordinates = !programUsesG92 || state.hasG92;
-    if (hasMoveAxis && isMotion(gCode) && inWorkCoordinates) {
-      const isFirstWorkMove = !stats.firstMove;
-      if (isFirstWorkMove) stats.firstMove = { line: lineNumber, x: after.x, y: after.y, z: after.z };
-      if (!state.toolLoaded && ["G01", "G02", "G03"].includes(gCode)) warnings.push("工具取得前に加工");
-      if (!state.spindleOn && ["G01", "G02", "G03"].includes(gCode)) warnings.push("主軸ON前に加工");
-      if (!isFirstWorkMove && gCode === "G00" && hasXY && !hasZ && after.z < cfg.materialThickness + cfg.approachClearance - 0.001) {
-        warnings.push("低いZでG00 XY移動");
+
+    let segment = null;
+    if (sawG92 && hasMoveAxis && ["G00", "G01", "G02", "G03"].includes(stateNc.motion)) {
+      activeMotionIndex += 1;
+      if (!inferred.start) inferred.start = { ...after, line };
+      inferred.end = { ...after, line };
+      updateBounds(after);
+
+      if (!firstPlungeDone && stateNc.mode === "G91" && after.z < before.z) {
+        inferred.approachZ = before.z;
+        inferred.materialTopZ = after.z;
+        inferred.materialThickness = after.z;
+        firstPlungeDone = true;
       }
-      if (after.z < -cfg.allowOvercut) warnings.push("材料下面より深いZ");
-      if (hasZ) {
-        const dz = after.z - before.z;
-        if (dz < 0) stats.zDown += Math.abs(dz);
-        if (dz > 0) stats.zUp += dz;
+      if (!firstPlungeDone && stateNc.mode === "G90" && after.z > 0) {
+        inferred.safeZ = Math.max(inferred.safeZ ?? after.z, after.z);
       }
-      const dz = after.z - before.z;
-      const len = distance(before, after);
-      const feed = state.f || 0;
-      const minutes = feed > 0 && gCode !== "G00" ? len / feed : 0;
-      stats.estimatedMinutes += minutes;
-      const toolInfo = currentTool();
-      toolInfo.estimatedMinutes += minutes;
-      updateToolRange(toolInfo, after);
-      segments.push({
-        line: lineNumber,
+      if (firstPlungeDone && stateNc.mode === "G90" && after.z > 0) {
+        inferred.safeZ = Math.max(inferred.safeZ ?? after.z, after.z);
+      }
+
+      const length = dist(before, after);
+      const rapidFeed = 10000;
+      const feed = stateNc.motion === "G00" ? rapidFeed : (stateNc.f || 1000);
+      const duration = Math.max(0.02, length / feed * 60);
+      inferred.timeSeconds += duration;
+      segment = {
+        index: activeMotionIndex,
+        line,
         raw,
-        type: gCode,
-        mode: state.mode,
+        nNumber,
+        type: stateNc.motion,
+        mode: stateNc.mode,
         from: before,
         to: after,
-        f: state.f,
-        s: state.s,
-        t: state.t,
-        tool: state.tool || "",
-        warning: warnings.length > 0,
-      });
-      updateRange(after);
-      zTrace.push({ line: lineNumber, z: after.z, dz, mode: state.mode, warning: warnings.length > 0, f: state.f, s: state.s, t: state.t, tool: state.tool || "" });
+        f: stateNc.f,
+        s: stateNc.s,
+        t: stateNc.t,
+        tool: stateNc.tool || stateNc.t,
+        duration,
+        startTime: inferred.timeSeconds - duration,
+        endTime: inferred.timeSeconds,
+      };
+      segments.push(segment);
+      toolInfo().count += 1;
+      toolInfo().minZ = toolInfo().minZ === null ? after.z : Math.min(toolInfo().minZ, after.z);
+      if (!stateNc.toolLoaded && ["G01", "G02", "G03"].includes(stateNc.motion)) {
+        addSafety("danger", line, "工具取得前に加工しています");
+        toolInfo().warnings += 1;
+      }
+      if (!stateNc.spindle && ["G01", "G02", "G03"].includes(stateNc.motion)) {
+        addSafety("danger", line, "主軸ON前に加工しています");
+        toolInfo().warnings += 1;
+      }
     }
 
-    warnings.forEach((message) => {
-      addCheck(message.includes("深い") || message.includes("低いZ") ? "danger" : "warn", lineNumber, message);
-      currentTool().warnings += 1;
-    });
-
-    rows.push({
-      line: lineNumber,
-      raw,
-      oNumber,
-      nNumber,
-      gCode,
-      mode: state.mode,
-      x: state.x,
-      y: state.y,
-      z: state.z,
-      f: state.f,
-      s: state.s,
-      t: state.t,
-      tool: state.tool || "",
-      warnings,
-    });
+    const row = {
+      line, raw, cleaned, oNumber, nNumber,
+      motionIndex: segment ? segment.index : null,
+      mode: stateNc.mode,
+      motion: stateNc.motion,
+      x: stateNc.x, y: stateNc.y, z: stateNc.z,
+      f: stateNc.f, s: stateNc.s, t: stateNc.t,
+      tool: stateNc.tool,
+    };
+    rows.push(row);
+    if (segment) motionRows.push(row);
   });
 
-  if (!state.hasG92) addCheck("danger", "", "G92がありません");
-  if (!state.hasM21) addCheck("warn", "", "M21がありません");
-  if (!state.hasP9000) addCheck("danger", "", "P9000工具取得がありません");
-  if (!state.hasP9900) addCheck("danger", "", "P9900工具返却がありません");
-  if (state.mode === "G91") addCheck("warn", "", "G91のまま終了しています");
-  if (state.z < zValues().safeZ - 0.001) addCheck("warn", "", "加工終了時にSafeZへ戻っていません");
-  if (stats.minZ !== null && stats.minZ < -cfg.allowOvercut) addCheck("danger", "", `最深Z ${fmt(stats.minZ)} が許容突抜 ${fmt(cfg.allowOvercut)} を超えています`);
-  if (!state.hasM92 || !state.hasM95) addCheck("warn", "", "M92/M95が不足しています");
-  if (!state.hasG218 || !state.hasG219) addCheck("warn", "", "G218/G219が不足しています");
-  if (state.toolLoaded) addCheck("danger", "", "工具返却なしで終了しています");
-  const hasM30 = rows.some((row) => /(^|\s)M\s*30(\s|$)/i.test(row.raw));
-  if (hasM30 && !state.hasP9900) addCheck("danger", "", "工具返却なしでM30があります");
-  if (modeHistory.length > 12) addCheck("warn", "", `G90/G91切替が多いです (${modeHistory.length}回)`);
+  inferred.materialTopZ ??= inferred.maxZ ?? 0;
+  inferred.materialThickness ??= inferred.materialTopZ;
+  inferred.approachZ ??= inferred.materialTopZ;
+  inferred.safeZ ??= inferred.maxZ ?? inferred.materialTopZ;
+  inferred.materialBottomZ = Math.min(0, inferred.minZ ?? 0);
+  inferred.minZ ??= 0;
+  inferred.maxZ ??= inferred.safeZ;
+  const width = inferred.maxX !== null ? inferred.maxX - Math.min(0, inferred.minX) : 0;
+  const depth = inferred.maxY !== null ? inferred.maxY - Math.min(0, inferred.minY) : 0;
+  inferred.materialX = Math.max(300, Math.ceil(width / 10) * 10 || 300);
+  inferred.materialY = Math.max(300, Math.ceil(depth / 10) * 10 || 300);
 
+  if (!stateNc.hasG92) addSafety("danger", "", "G92がありません");
+  if (!stateNc.hasM21) addSafety("warn", "", "M21がありません");
+  if (!stateNc.hasP9000) addSafety("danger", "", "P9000工具取得がありません");
+  if (!stateNc.hasP9900) addSafety("danger", "", "P9900工具返却がありません");
+  if (!stateNc.hasG218 || !stateNc.hasG219) addSafety("warn", "", "G218/G219が不足しています");
+  if (!stateNc.hasM92 || !stateNc.hasM95) addSafety("warn", "", "M92/M95が不足しています");
+  if (stateNc.toolLoaded) addSafety("danger", "", "工具返却なしで終了しています");
+  if (inferred.minZ < inferred.materialBottomZ - 1) addSafety("warn", "", "最深Zが材料下面を超えている可能性があります");
+
+  return { rows, motionRows, segments, toolEvents, tools: Array.from(toolMap.values()), safety, inferred };
+}
+
+function initThree() {
+  const host = $("threeViewport");
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x101820);
+  camera = new THREE.PerspectiveCamera(45, host.clientWidth / host.clientHeight, 0.1, 10000);
+  camera.position.set(360, -480, 320);
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(host.clientWidth, host.clientHeight);
+  host.appendChild(renderer.domElement);
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(150, 150, 20);
+  controls.update();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x2f3b45, 1.2));
+  const dir = new THREE.DirectionalLight(0xffffff, 1.5);
+  dir.position.set(200, -300, 500);
+  scene.add(dir);
+  scene.add(new THREE.GridHelper(600, 30, 0x52616d, 0x29343d));
+  pathGroup = new THREE.Group();
+  markerGroup = new THREE.Group();
+  scene.add(pathGroup, markerGroup);
+  toolMesh = createToolMesh();
+  scene.add(toolMesh);
+  animate();
+}
+
+function createToolMesh() {
+  const group = new THREE.Group();
+  const holder = new THREE.Mesh(
+    new THREE.CylinderGeometry(5, 5, 42, 20),
+    new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.35, roughness: 0.35 })
+  );
+  holder.rotation.x = Math.PI / 2;
+  holder.position.z = 22;
+  const tip = new THREE.Mesh(
+    new THREE.ConeGeometry(6, 20, 24),
+    new THREE.MeshStandardMaterial({ color: 0x111827, metalness: 0.3, roughness: 0.4 })
+  );
+  tip.rotation.x = Math.PI;
+  tip.position.z = -10;
+  group.add(holder, tip);
+  return group;
+}
+
+function clearGroup(group) {
+  while (group.children.length) {
+    const child = group.children.pop();
+    child.geometry?.dispose?.();
+    child.material?.dispose?.();
+  }
+}
+
+function lineObject(points, color, dashed = false) {
+  const geometry = new THREE.BufferGeometry().setFromPoints(points);
+  const material = dashed
+    ? new THREE.LineDashedMaterial({ color, dashSize: 6, gapSize: 4 })
+    : new THREE.LineBasicMaterial({ color });
+  const line = new THREE.Line(geometry, material);
+  if (dashed) line.computeLineDistances();
+  return line;
+}
+
+function rebuildScene() {
+  const a = state.analysis;
+  if (stockMesh) {
+    scene.remove(stockMesh);
+    stockMesh.geometry.dispose();
+    stockMesh.material.dispose();
+  }
+  if (rangeBox) {
+    scene.remove(rangeBox);
+    rangeBox.geometry.dispose();
+    rangeBox.material.dispose();
+  }
+  clearGroup(pathGroup);
+  clearGroup(markerGroup);
+
+  const inf = a.inferred;
+  const stockGeo = new THREE.BoxGeometry(inf.materialX, inf.materialY, Math.max(1, inf.materialThickness));
+  const stockMat = new THREE.MeshStandardMaterial({ color: 0x9fb6aa, transparent: true, opacity: 0.48, roughness: 0.7 });
+  stockMesh = new THREE.Mesh(stockGeo, stockMat);
+  stockMesh.position.set(inf.materialX / 2, inf.materialY / 2, inf.materialThickness / 2);
+  scene.add(stockMesh);
+
+  const box = new THREE.Box3(
+    new THREE.Vector3(inf.minX ?? 0, inf.minY ?? 0, inf.minZ ?? 0),
+    new THREE.Vector3(inf.maxX ?? 1, inf.maxY ?? 1, inf.maxZ ?? 1)
+  );
+  rangeBox = new THREE.Box3Helper(box, 0x9333ea);
+  scene.add(rangeBox);
+
+  a.segments.forEach((seg) => {
+    const color = seg.type === "G00" ? 0x9ca3af : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
+    pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00"));
+  });
+
+  addMarker(inf.workOrigin, 0x7c3aed, "cross");
+  addMarker({ x: inf.machineOrigin.x, y: inf.machineOrigin.y, z: 0 }, 0xdc2626, "diamond");
+  if (inf.start) addMarker(inf.start, 0x111827, "sphere", 5);
+  if (inf.end) addMarker(inf.end, 0x111827, "box", 7);
+  a.toolEvents.forEach((event) => addMarker(event, event.type === "P9000" ? 0xf59e0b : 0xdc2626, "cone", 7));
+
+  const cx = (inf.materialX || 300) / 2;
+  const cy = (inf.materialY || 300) / 2;
+  controls.target.set(cx, cy, Math.max(20, (inf.materialThickness || 30) / 2));
+  camera.position.set(cx + 260, cy - 390, Math.max(240, (inf.safeZ || 80) + 170));
+  controls.update();
+  updateToolAtIndex(0);
+}
+
+function vec(p) {
+  return new THREE.Vector3(p.x || 0, p.y || 0, p.z || 0);
+}
+
+function addMarker(p, color, type, size = 6) {
+  let mesh;
+  if (type === "box") mesh = new THREE.Mesh(new THREE.BoxGeometry(size, size, size), new THREE.MeshBasicMaterial({ color }));
+  else if (type === "cone") mesh = new THREE.Mesh(new THREE.ConeGeometry(size, size * 2, 16), new THREE.MeshBasicMaterial({ color }));
+  else if (type === "diamond") mesh = new THREE.Mesh(new THREE.OctahedronGeometry(size), new THREE.MeshBasicMaterial({ color }));
+  else mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 18, 12), new THREE.MeshBasicMaterial({ color }));
+  mesh.position.set(p.x || 0, p.y || 0, p.z || 0);
+  markerGroup.add(mesh);
+}
+
+function animate(time = 0) {
+  animationId = requestAnimationFrame(animate);
+  const dt = state.lastFrame ? (time - state.lastFrame) / 1000 : 0;
+  state.lastFrame = time;
+  if (state.playing && state.analysis.segments.length) {
+    advancePlayback(dt * state.speed);
+  }
+  controls?.update();
+  renderer?.render(scene, camera);
+}
+
+function advancePlayback(seconds) {
+  let remaining = seconds;
+  while (remaining > 0 && state.analysis.segments.length) {
+    const seg = state.analysis.segments[state.index];
+    const local = (seg.playhead || 0) + remaining;
+    if (local >= seg.duration) {
+      seg.playhead = seg.duration;
+      if (state.index >= state.analysis.segments.length - 1) {
+        state.playing = false;
+        remaining = 0;
+      } else {
+        remaining = local - seg.duration;
+        seg.playhead = 0;
+        state.index += 1;
+        state.analysis.segments[state.index].playhead = 0;
+      }
+      continue;
+    }
+    seg.playhead = local;
+    remaining = 0;
+  }
+  updateToolAtIndex(state.index);
+}
+
+function currentPosition() {
+  const seg = state.analysis.segments[state.index];
+  if (!seg) return { x: 0, y: 0, z: 0, f: null, s: null, t: null, line: null };
+  const t = Math.max(0, Math.min(1, (seg.playhead || 0) / Math.max(0.001, seg.duration)));
   return {
-    config: cfg,
-    z: zValues(),
-    rows,
-    checks,
-    tools: Array.from(tools.values()),
-    toolEvents,
-    segments,
-    zTrace,
-    modeHistory,
-    stats,
+    x: seg.from.x + (seg.to.x - seg.from.x) * t,
+    y: seg.from.y + (seg.to.y - seg.from.y) * t,
+    z: seg.from.z + (seg.to.z - seg.from.z) * t,
+    f: seg.f, s: seg.s, t: seg.t, line: seg.line, nNumber: seg.nNumber,
   };
 }
 
-function renderZSummary(result = null) {
-  const z = zValues();
-  const rows = [
-    ["materialThickness", config.materialThickness],
-    ["safeClearance", config.safeClearance],
-    ["approachClearance", config.approachClearance],
-    ["materialTopZ", z.materialTopZ],
-    ["safeZ", z.safeZ],
-    ["approachZ", z.approachZ],
+function updateToolAtIndex(index) {
+  if (!state.analysis.segments.length) {
+    state.index = 0;
+    updateHud(currentPosition());
+    updateTimeline();
+    return;
+  }
+  state.index = Math.max(0, Math.min(index, state.analysis.segments.length - 1));
+  const pos = currentPosition();
+  toolMesh.position.set(pos.x, pos.y, pos.z);
+  updateHud(pos);
+  renderNcList();
+  drawSection();
+  drawXY();
+  updateTimeline();
+}
+
+function jumpToIndex(index) {
+  state.analysis.segments.forEach((seg) => { seg.playhead = 0; });
+  updateToolAtIndex(index);
+}
+
+function updateHud(pos) {
+  $("hudX").textContent = fmt(pos.x);
+  $("hudY").textContent = fmt(pos.y);
+  $("hudZ").textContent = fmt(pos.z);
+  $("hudF").textContent = fmt(pos.f, 0);
+  $("hudS").textContent = fmt(pos.s, 0);
+  $("hudT").textContent = fmt(pos.t, 0);
+  $("currentLineLabel").textContent = pos.nNumber !== null && pos.nNumber !== undefined ? `N${String(pos.nNumber).padStart(6, "0")}` : (pos.line ? `L${pos.line}` : "----");
+}
+
+function renderSummary() {
+  const inf = state.analysis.inferred;
+  const tools = state.analysis.tools.length;
+  const toolChanges = state.analysis.toolEvents.filter((e) => e.type === "P9000").length;
+  const values = [
+    ["加工面", inf.face],
+    ["材料サイズ", `${fmt(inf.materialX, 0)}×${fmt(inf.materialY, 0)}`],
+    ["推定材料厚", `${fmt(inf.materialThickness)}mm`],
+    ["SafeZ", `${fmt(inf.safeZ)}mm`],
+    ["ApproachZ", `${fmt(inf.approachZ)}mm`],
+    ["工具", state.analysis.tools.map((t) => `T${t.tool}`).join(", ") || "-"],
+    ["工具交換", `${toolChanges}回`],
+    ["加工時間", formatTime(inf.timeSeconds)],
+    ["最深Z", `${fmt(inf.minZ)}mm`],
+    ["加工範囲X", `${fmt(inf.minX)}..${fmt(inf.maxX)}`],
+    ["加工範囲Y", `${fmt(inf.minY)}..${fmt(inf.maxY)}`],
+    ["G92原点", `X${fmt(inf.workOrigin.x)} Y${fmt(inf.workOrigin.y)}`],
   ];
-  if (result) {
-    rows.push(
-      ["最深Z", result.stats.minZ],
-      ["Z下降量", result.stats.zDown],
-      ["Z上昇量", result.stats.zUp],
-      ["G91 Z累積", result.stats.g91ZTotal],
-      ["G90/G91切替", `${result.modeHistory.length} 回`],
-    );
-  }
-  $("zSummary").innerHTML = rows.map(([label, value]) => `<div class="metric"><b>${label}</b><span>${typeof value === "string" ? escapeHtml(value) : fmt(value)}</span></div>`).join("");
+  $("summaryGrid").innerHTML = values.map(([k, v]) => `<div class="metric"><span>${k}</span><strong>${v}</strong></div>`).join("");
 }
 
-function renderChecks(result) {
-  const danger = result.checks.filter((c) => c.severity === "danger").length;
-  const warn = result.checks.filter((c) => c.severity === "warn").length;
-  $("checkSummary").innerHTML = `<div class="metric ${danger ? "check-danger" : warn ? "check-warn" : "check-ok"}"><b>${danger ? "要確認" : warn ? "注意" : "OK"}</b><span>危険 ${danger} / 警告 ${warn}</span></div>`;
-  $("checkList").innerHTML = result.checks.length
-    ? result.checks.map((c) => `<div class="check-item check-${c.severity}"><b>${c.line || "-"}</b> ${escapeHtml(c.message)}</div>`).join("")
-    : `<div class="check-item check-ok">警告はありません</div>`;
+function renderSafety() {
+  const items = state.analysis.safety;
+  const danger = items.some((i) => i.level === "danger");
+  const warn = items.some((i) => i.level === "warn");
+  const box = $("safetyState");
+  box.className = `safety-state ${danger ? "danger" : warn ? "warn" : "ok"}`;
+  box.textContent = danger ? "危険" : warn ? "注意" : "正常";
+  $("safetyList").innerHTML = items.length
+    ? items.map((i) => `<div class="safety-item ${i.level === "danger" ? "danger" : ""}">${i.line ? `L${i.line} ` : ""}${escapeHtml(i.message)}</div>`).join("")
+    : `<div class="safety-item">異常は検出されていません</div>`;
 }
 
-function renderTools(result) {
-  $("toolList").innerHTML = result.tools.length
-    ? result.tools.map((tool) => `
-      <div class="tool-card">
-        <b>T${escapeHtml(tool.tool)}</b>
-        <span>P9000: ${tool.p9000Line || "-"} / P9900: ${tool.p9900Line || "-"}</span><br />
-        <span>S${tool.spindle || "-"} / Z最深 ${fmt(tool.minZ)} / 時間 ${fmt(tool.estimatedMinutes, 2)}分 / 警告 ${tool.warnings}</span><br />
-        <span>X ${fmt(tool.minX)}..${fmt(tool.maxX)} / Y ${fmt(tool.minY)}..${fmt(tool.maxY)}</span>
-      </div>`).join("")
-    : `<div class="tool-card">工具情報なし</div>`;
+function renderNcList() {
+  const activeLine = currentPosition().line;
+  $("ncList").innerHTML = state.analysis.rows.map((row) => {
+    const active = row.line === activeLine ? " active" : "";
+    const label = row.nNumber !== null && row.nNumber !== undefined ? `N${String(row.nNumber).padStart(6, "0")}` : `L${row.line}`;
+    return `<div class="nc-row${active}" data-motion="${row.motionIndex ?? ""}" data-line="${row.line}"><span class="line">${label}</span><span>${escapeHtml(row.raw)}</span></div>`;
+  }).join("");
+  const active = $("ncList").querySelector(".nc-row.active");
+  if (active) active.scrollIntoView({ block: "center" });
 }
 
-function renderRows(result) {
-  $("lineCount").textContent = `${result.rows.length} 行`;
-  $("coordTable").querySelector("tbody").innerHTML = result.rows.map((row) => `
-    <tr data-line="${row.line}" class="${row.warnings.length ? "warn-row" : ""} ${selectedLine === row.line ? "selected-row" : ""}">
-      <td>${row.line}</td>
-      <td title="${escapeHtml(row.raw)}">${escapeHtml(row.raw)}</td>
-      <td>${row.gCode || "-"}</td>
-      <td>${row.mode}</td>
-      <td>${fmt(row.x)}</td>
-      <td>${fmt(row.y)}</td>
-      <td>${fmt(row.z)}</td>
-      <td>${fmt(row.f, 0)}</td>
-      <td>${fmt(row.s, 0)}</td>
-      <td>${fmt(row.t, 0)}</td>
-      <td>${escapeHtml(row.tool || "")}</td>
-      <td>${escapeHtml(row.warnings.join(" / "))}</td>
-    </tr>
-  `).join("");
-}
-
-function resizeCanvas(canvas) {
-  const rect = canvas.getBoundingClientRect();
-  const width = Math.max(320, Math.round(rect.width || canvas.width));
-  const height = Math.max(180, Math.round(rect.height || canvas.height));
-  if (canvas.width !== width || canvas.height !== height) {
-    canvas.width = width;
-    canvas.height = height;
-  }
-  return { width, height };
-}
-
-function machiningBounds(result) {
-  const xs = result.segments.flatMap((s) => [s.from.x, s.to.x]);
-  const ys = result.segments.flatMap((s) => [s.from.y, s.to.y]);
-  if (!xs.length || !ys.length) {
-    return { minX: 0, maxX: config.materialX, minY: 0, maxY: config.materialY };
-  }
-  return {
-    minX: Math.min(...xs),
-    maxX: Math.max(...xs),
-    minY: Math.min(...ys),
-    maxY: Math.max(...ys),
-  };
-}
-
-function xyBaseBounds(result) {
-  if (previewMode === "work") {
-    const b = machiningBounds(result);
-    const pad = Math.max(5, Math.max(b.maxX - b.minX, b.maxY - b.minY) * 0.12);
-    return { minX: b.minX - pad, maxX: b.maxX + pad, minY: b.minY - pad, maxY: b.maxY + pad };
-  }
-  return {
-    minX: Math.min(0, result.stats.minX ?? 0),
-    maxX: Math.max(config.materialX, result.stats.maxX ?? config.materialX),
-    minY: Math.min(0, result.stats.minY ?? 0),
-    maxY: Math.max(config.materialY, result.stats.maxY ?? config.materialY),
-  };
-}
-
-function resetXYView(result = analysis) {
-  if (!result) return;
-  const canvas = $("xyCanvas");
-  const { width, height } = resizeCanvas(canvas);
-  const b = xyBaseBounds(result);
-  const pad = 34;
-  const sx = (width - pad * 2) / Math.max(1, b.maxX - b.minX);
-  const sy = (height - pad * 2) / Math.max(1, b.maxY - b.minY);
-  xyView.scale = Math.max(0.001, Math.min(sx, sy));
-  xyView.offsetX = pad - b.minX * xyView.scale + ((width - pad * 2) - (b.maxX - b.minX) * xyView.scale) / 2;
-  xyView.offsetY = height - pad + b.minY * xyView.scale - ((height - pad * 2) - (b.maxY - b.minY) * xyView.scale) / 2;
-  xyView.initialized = true;
-}
-
-function worldToScreen(point) {
-  return {
-    x: point.x * xyView.scale + xyView.offsetX,
-    y: xyView.offsetY - point.y * xyView.scale,
-  };
-}
-
-function screenToWorld(point) {
-  return {
-    x: (point.x - xyView.offsetX) / xyView.scale,
-    y: (xyView.offsetY - point.y) / xyView.scale,
-  };
-}
-
-function distanceToSegment(point, a, b) {
-  const vx = b.x - a.x;
-  const vy = b.y - a.y;
-  const wx = point.x - a.x;
-  const wy = point.y - a.y;
-  const len2 = vx * vx + vy * vy;
-  const t = len2 ? Math.max(0, Math.min(1, (wx * vx + wy * vy) / len2)) : 0;
-  const px = a.x + t * vx;
-  const py = a.y + t * vy;
-  return Math.hypot(point.x - px, point.y - py);
-}
-
-function drawCross(ctx, point, size, color) {
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(point.x - size, point.y);
-  ctx.lineTo(point.x + size, point.y);
-  ctx.moveTo(point.x, point.y - size);
-  ctx.lineTo(point.x, point.y + size);
-  ctx.stroke();
-}
-
-function drawXY(result, keepView = false) {
-  const canvas = $("xyCanvas");
+function drawSection() {
+  const canvas = $("sectionCanvas");
   const ctx = canvas.getContext("2d");
-  const { width: w, height: h } = resizeCanvas(canvas);
-  if (!keepView || !xyView.initialized) resetXYView(result);
-  xyView.hitItems = [];
+  fitCanvas(canvas);
+  const w = canvas.width;
+  const h = canvas.height;
+  const inf = state.analysis.inferred;
+  const pos = currentPosition();
   ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, w, h);
-
-  const mat0 = worldToScreen({ x: 0, y: 0 });
-  const mat1 = worldToScreen({ x: config.materialX, y: config.materialY });
-  ctx.fillStyle = "#f8fafc";
-  ctx.fillRect(mat0.x, mat1.y, mat1.x - mat0.x, mat0.y - mat1.y);
-  ctx.strokeStyle = "#8b95a1";
-  ctx.lineWidth = 2;
-  ctx.setLineDash([]);
-  ctx.strokeRect(mat0.x, mat1.y, mat1.x - mat0.x, mat0.y - mat1.y);
-
-  const b = machiningBounds(result);
-  const r0 = worldToScreen({ x: b.minX, y: b.minY });
-  const r1 = worldToScreen({ x: b.maxX, y: b.maxY });
-  ctx.strokeStyle = "#9333ea";
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([7, 5]);
-  ctx.strokeRect(r0.x, r1.y, r1.x - r0.x, r0.y - r1.y);
-  ctx.setLineDash([]);
-
-  result.segments.forEach((seg) => {
-    const a = worldToScreen(seg.from);
-    const b = worldToScreen(seg.to);
-    xyView.hitItems.push({ type: "segment", line: seg.line, segment: seg, a, b });
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.strokeStyle = seg.warning ? "#b91c1c" : seg.type === "G00" ? "#6b7280" : ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
-    ctx.lineWidth = selectedLine === seg.line ? 5 : seg.type === "G00" ? 1.4 : 2.4;
-    ctx.setLineDash(seg.type === "G00" ? [5, 5] : []);
-    ctx.stroke();
-  });
-  ctx.setLineDash([]);
-
-  if (result.stats.g92) {
-    drawCross(ctx, worldToScreen(result.stats.g92), 10, "#7c3aed");
-  }
-  drawCross(ctx, worldToScreen({ x: 0, y: 0 }), 14, "#111827");
-
-  const machineMarker = worldToScreen({ x: config.machineOriginX, y: config.machineOriginY });
-  const machineVisible = machineMarker.x > -80 && machineMarker.x < w + 80 && machineMarker.y > -80 && machineMarker.y < h + 80;
-  const machineDraw = machineVisible ? machineMarker : { x: 24, y: 24 };
-  ctx.fillStyle = "#dc2626";
-  ctx.beginPath();
-  ctx.moveTo(machineDraw.x, machineDraw.y - 9);
-  ctx.lineTo(machineDraw.x + 9, machineDraw.y);
-  ctx.lineTo(machineDraw.x, machineDraw.y + 9);
-  ctx.lineTo(machineDraw.x - 9, machineDraw.y);
-  ctx.closePath();
-  ctx.fill();
-  if (!machineVisible) {
-    ctx.fillStyle = "#dc2626";
-    ctx.font = "12px Segoe UI";
-    ctx.fillText(`機械原点 X${fmt(config.machineOriginX)} Y${fmt(config.machineOriginY)}`, machineDraw.x + 14, machineDraw.y + 4);
-  }
-
-  if (result.stats.firstMove) {
-    const first = worldToScreen(result.stats.firstMove);
-    ctx.fillStyle = "#111827";
-    ctx.beginPath();
-    ctx.arc(first.x, first.y, 7, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  const lastSeg = result.segments[result.segments.length - 1];
-  if (lastSeg) {
-    const end = worldToScreen(lastSeg.to);
-    ctx.fillStyle = "#111827";
-    ctx.fillRect(end.x - 6, end.y - 6, 12, 12);
-  }
-  result.toolEvents.forEach((event) => {
-    const p = worldToScreen(event);
-    ctx.fillStyle = event.type === "P9000" ? "#f59e0b" : "#dc2626";
-    ctx.beginPath();
-    ctx.moveTo(p.x, p.y - 7);
-    ctx.lineTo(p.x + 7, p.y + 7);
-    ctx.lineTo(p.x - 7, p.y + 7);
-    ctx.closePath();
-    ctx.fill();
-    xyView.hitItems.push({ type: "tool", line: event.line, event, a: { x: p.x - 10, y: p.y - 10 }, b: { x: p.x + 10, y: p.y + 10 } });
-  });
-  $("rangeSummary").textContent = `X ${fmt(result.stats.minX)}..${fmt(result.stats.maxX)} / Y ${fmt(result.stats.minY)}..${fmt(result.stats.maxY)}`;
-}
-
-function drawZ(result) {
-  const canvas = $("zCanvas");
-  const ctx = canvas.getContext("2d");
-  const { width: w, height: h } = resizeCanvas(canvas);
-  zView.hitItems = [];
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, w, h);
-  const trace = result.zTrace;
-  const minZ = Math.min(result.z.minAllowedZ, result.stats.minZ ?? 0);
-  const maxZ = Math.max(result.z.safeZ, result.stats.maxZ ?? result.z.safeZ);
-  const pad = 30;
-  const xFor = (i) => pad + (trace.length <= 1 ? 0 : (i / (trace.length - 1)) * (w - pad * 2));
-  const yFor = (z) => h - pad - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - pad * 2);
-
-  [
-    ["safeZ", result.z.safeZ, "#0f766e"],
-    ["approachZ", result.z.approachZ, "#2563eb"],
-    ["materialTopZ", result.z.materialTopZ, "#111827"],
-    ["最深Z", result.stats.minZ, "#b45309"],
-    ["limit", result.z.minAllowedZ, "#b91c1c"],
-  ].forEach(([label, z, color]) => {
-    if (z === null || z === undefined) return;
+  const minZ = Math.min(inf.materialBottomZ, inf.minZ, 0);
+  const maxZ = Math.max(inf.safeZ, inf.maxZ, inf.materialThickness + 20);
+  const yFor = (z) => h - 28 - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - 54);
+  const lines = [
+    ["SafeZ", inf.safeZ, "#0f766e"],
+    ["ApproachZ", inf.approachZ, "#2563eb"],
+    ["MaterialTop", inf.materialTopZ, "#111827"],
+    ["MaterialBottom", inf.materialBottomZ, "#b45309"],
+    ["MinZ", inf.minZ, "#b91c1c"],
+  ];
+  lines.forEach(([label, z, color]) => {
     ctx.strokeStyle = color;
-    ctx.lineWidth = 1;
-    ctx.setLineDash(label === "最深Z" ? [6, 4] : []);
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(pad, yFor(z));
-    ctx.lineTo(w - pad, yFor(z));
+    ctx.moveTo(24, yFor(z));
+    ctx.lineTo(w - 24, yFor(z));
     ctx.stroke();
-    ctx.setLineDash([]);
     ctx.fillStyle = color;
     ctx.font = "12px Segoe UI";
-    ctx.fillText(label, pad + 4, yFor(z) - 4);
+    ctx.fillText(label, 28, yFor(z) - 4);
   });
+  const toolY = yFor(pos.z);
+  ctx.strokeStyle = "#111827";
+  ctx.lineWidth = 4;
+  ctx.beginPath();
+  ctx.moveTo(w * 0.66, toolY - 40);
+  ctx.lineTo(w * 0.66, toolY);
+  ctx.stroke();
+  ctx.fillStyle = "#f59e0b";
+  ctx.beginPath();
+  ctx.moveTo(w * 0.66, toolY + 12);
+  ctx.lineTo(w * 0.66 - 8, toolY);
+  ctx.lineTo(w * 0.66 + 8, toolY);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#111827";
+  ctx.font = "700 13px Consolas";
+  ctx.fillText(`Z ${fmt(pos.z)}`, w * 0.66 + 14, toolY + 5);
+}
 
-  if (trace.length) {
+function drawXY() {
+  const canvas = $("xyCanvas");
+  const ctx = canvas.getContext("2d");
+  fitCanvas(canvas);
+  const w = canvas.width;
+  const h = canvas.height;
+  const a = state.analysis;
+  const inf = a.inferred;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+  const bounds = state.xyMode === "work"
+    ? padBounds({ minX: inf.minX ?? 0, maxX: inf.maxX ?? inf.materialX, minY: inf.minY ?? 0, maxY: inf.maxY ?? inf.materialY }, 0.18)
+    : { minX: 0, maxX: inf.materialX, minY: 0, maxY: inf.materialY };
+  const pad = 18;
+  const scale = Math.min((w - pad * 2) / Math.max(1, bounds.maxX - bounds.minX), (h - pad * 2) / Math.max(1, bounds.maxY - bounds.minY));
+  const px = (p) => ({ x: pad + (p.x - bounds.minX) * scale, y: h - pad - (p.y - bounds.minY) * scale });
+  const m0 = px({ x: 0, y: 0 });
+  const m1 = px({ x: inf.materialX, y: inf.materialY });
+  ctx.strokeStyle = "#8b95a1";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(m0.x, m1.y, m1.x - m0.x, m0.y - m1.y);
+  a.segments.forEach((seg, idx) => {
+    const p0 = px(seg.from);
+    const p1 = px(seg.to);
+    ctx.strokeStyle = idx <= state.index ? (seg.type === "G00" ? "#6b7280" : "#0f766e") : "#cbd5df";
+    ctx.lineWidth = idx === state.index ? 4 : 2;
+    ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
     ctx.beginPath();
-    trace.forEach((point, i) => {
-      const x = xFor(i);
-      const y = yFor(point.z);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.strokeStyle = "#0f766e";
-    ctx.lineWidth = 2;
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
-    trace.forEach((point, i) => {
-      const x = xFor(i);
-      const y = yFor(point.z);
-      zView.hitItems.push({ line: point.line, point, x, y });
-      if (point.mode === "G91" && point.dz < 0) {
-        ctx.fillStyle = "#b91c1c";
-        ctx.beginPath();
-        ctx.arc(x, y, selectedLine === point.line ? 6 : 4, 0, Math.PI * 2);
-        ctx.fill();
-      } else if (selectedLine === point.line) {
-        ctx.fillStyle = "#2563eb";
-        ctx.beginPath();
-        ctx.arc(x, y, 6, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    });
-  }
-  $("zRangeSummary").textContent = `最深Z ${fmt(result.stats.minZ)} / 下降 ${fmt(result.stats.zDown)} / 上昇 ${fmt(result.stats.zUp)} / G91累積 ${fmt(result.stats.g91ZTotal)}`;
-}
-
-function setStatus(text, loading = false) {
-  const status = $("analysisStatus");
-  status.textContent = text;
-  status.classList.toggle("loading", loading);
-}
-
-function setPreviewMode(mode) {
-  previewMode = mode;
-  $("fitMaterialBtn").classList.toggle("active", mode === "material");
-  $("fitWorkBtn").classList.toggle("active", mode === "work");
-  xyView.initialized = false;
-  if (analysis) drawXY(analysis);
-}
-
-function rowForLine(line) {
-  return $("coordTable").querySelector(`tbody tr[data-line="${line}"]`);
-}
-
-function highlightLine(line, scroll = false) {
-  selectedLine = line ? Number(line) : null;
-  document.querySelectorAll("#coordTable tbody tr").forEach((row) => {
-    row.classList.toggle("selected-row", Number(row.dataset.line) === selectedLine);
   });
-  if (scroll && selectedLine) {
-    const row = rowForLine(selectedLine);
-    if (row) row.scrollIntoView({ block: "center", behavior: "smooth" });
-  }
-  if (analysis) {
-    drawXY(analysis, true);
-    drawZ(analysis);
+  ctx.setLineDash([]);
+  const pos = px(currentPosition());
+  ctx.fillStyle = "#dc2626";
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function padBounds(b, ratio) {
+  const dx = Math.max(1, b.maxX - b.minX);
+  const dy = Math.max(1, b.maxY - b.minY);
+  return { minX: b.minX - dx * ratio, maxX: b.maxX + dx * ratio, minY: b.minY - dy * ratio, maxY: b.maxY + dy * ratio };
+}
+
+function fitCanvas(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(220, Math.round(rect.width || canvas.width));
+  const h = Math.max(160, Math.round(rect.height || canvas.height));
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
   }
 }
 
-function segmentTooltip(segment) {
-  return [
-    `行 ${segment.line} ${segment.type} ${segment.mode}`,
-    `X ${fmt(segment.to.x)}  Y ${fmt(segment.to.y)}  Z ${fmt(segment.to.z)}`,
-    `F ${fmt(segment.f, 0)}  S ${fmt(segment.s, 0)}  T ${fmt(segment.t, 0)}`,
-  ].join("\n");
+function updateTimeline() {
+  const total = state.analysis.segments.length;
+  $("timeline").max = Math.max(0, total - 1);
+  $("timeline").value = state.index;
+  const elapsed = state.analysis.segments.slice(0, state.index).reduce((sum, s) => sum + s.duration, 0);
+  $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
 }
 
-function showTooltip(id, event, text) {
-  const tip = $(id);
-  const rect = event.currentTarget.getBoundingClientRect();
-  tip.textContent = text;
-  tip.hidden = false;
-  tip.style.left = `${event.clientX - rect.left + 12}px`;
-  tip.style.top = `${event.clientY - rect.top + 12}px`;
+function formatTime(seconds) {
+  const s = Math.max(0, Math.round(seconds || 0));
+  const m = Math.floor(s / 60);
+  return `${String(m).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }
 
-function hideTooltip(id) {
-  $(id).hidden = true;
-}
-
-function nearestXYHit(event) {
-  if (!analysis) return null;
-  const rect = $("xyCanvas").getBoundingClientRect();
-  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  let best = null;
-  xyView.hitItems.forEach((item) => {
-    let d = Infinity;
-    if (item.type === "segment") {
-      d = distanceToSegment(point, item.a, item.b);
-    } else if (item.type === "tool") {
-      d = point.x >= item.a.x && point.x <= item.b.x && point.y >= item.a.y && point.y <= item.b.y ? 0 : Infinity;
-    }
-    if (d < 9 && (!best || d < best.distance)) {
-      best = { ...item, distance: d };
-    }
-  });
-  return best;
-}
-
-function nearestZHit(event) {
-  if (!analysis) return null;
-  const rect = $("zCanvas").getBoundingClientRect();
-  const point = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-  let best = null;
-  zView.hitItems.forEach((item) => {
-    const d = Math.hypot(point.x - item.x, point.y - item.y);
-    if (d < 10 && (!best || d < best.distance)) {
-      best = { ...item, distance: d };
-    }
-  });
-  return best;
+function loadNc(text) {
+  state.playing = false;
+  state.analysis = analyzeNc(text);
+  state.index = 0;
+  state.analysis.segments.forEach((s) => { s.playhead = 0; });
+  $("viewerStatus").textContent = `${state.analysis.segments.length} motion blocks`;
+  renderSummary();
+  renderSafety();
+  renderNcList();
+  rebuildScene();
+  updateToolAtIndex(0);
 }
 
 function scheduleAnalyze() {
-  clearTimeout(analyzeTimer);
-  if (!$("ncInput").value.trim()) {
-    setStatus("待機中");
-    return;
-  }
-  setStatus("解析待ち", true);
-  analyzeTimer = setTimeout(() => {
-    setStatus("解析中", true);
-    const run = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (callback) => setTimeout(callback, 0);
-    run(() => analyze());
+  clearTimeout(window.ncTimer);
+  window.ncTimer = setTimeout(() => {
+    if ($("ncInput").value.trim()) loadNc($("ncInput").value);
   }, 300);
 }
 
-function renderAnalysis(result) {
-  renderZSummary(result);
-  renderChecks(result);
-  renderTools(result);
-  renderRows(result);
-  drawXY(result);
-  drawZ(result);
-  $("jsonBtn").disabled = false;
-  $("coordCsvBtn").disabled = false;
-  $("checkCsvBtn").disabled = false;
-  setStatus(`解析済み ${result.rows.length}行`);
+function step(delta) {
+  state.playing = false;
+  jumpToIndex(state.index + delta);
 }
 
-function analyze() {
-  saveConfig();
-  clearTimeout(analyzeTimer);
-  if (!$("ncInput").value.trim()) {
-    analysis = null;
-    renderZSummary();
-    $("lineCount").textContent = "0 行";
-    $("coordTable").querySelector("tbody").innerHTML = "";
-    $("checkSummary").innerHTML = "";
-    $("checkList").innerHTML = "";
-    $("toolList").innerHTML = "";
-    $("jsonBtn").disabled = true;
-    $("coordCsvBtn").disabled = true;
-    $("checkCsvBtn").disabled = true;
-    setStatus("待機中");
-    return;
-  }
-  analysis = analyzeNc($("ncInput").value, config);
-  selectedLine = null;
-  xyView.initialized = false;
-  renderAnalysis(analysis);
-}
-
-function csvEscape(value) {
-  const text = value === null || value === undefined ? "" : String(value);
-  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
-
-function download(filename, text, type = "text/plain;charset=utf-8") {
-  const blob = new Blob([text], { type });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function downloadJson() {
-  if (!analysis) return;
-  download("shinx_nc_analysis.json", JSON.stringify(analysis, null, 2), "application/json;charset=utf-8");
-}
-
-function downloadCoordCsv() {
-  if (!analysis) return;
-  const header = ["line", "raw", "gCode", "mode", "x", "y", "z", "f", "s", "t", "tool", "warnings"];
-  const rows = analysis.rows.map((row) => header.map((key) => csvEscape(key === "warnings" ? row.warnings.join(" / ") : row[key])).join(","));
-  download("shinx_coordinates.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
-}
-
-function downloadCheckCsv() {
-  if (!analysis) return;
-  const header = ["severity", "line", "message"];
-  const rows = analysis.checks.map((check) => header.map((key) => csvEscape(check[key])).join(","));
-  download("shinx_safety_checks.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
+function bindEvents() {
+  $("playBtn").addEventListener("click", () => { state.playing = true; });
+  $("pauseBtn").addEventListener("click", () => { state.playing = false; });
+  $("stopBtn").addEventListener("click", () => { state.playing = false; jumpToIndex(0); });
+  $("prevBtn").addEventListener("click", () => step(-1));
+  $("nextBtn").addEventListener("click", () => step(1));
+  $("speedSelect").addEventListener("change", () => { state.speed = Number($("speedSelect").value); });
+  $("timeline").addEventListener("input", () => { state.playing = false; jumpToIndex(Number($("timeline").value)); });
+  $("ncInput").addEventListener("input", scheduleAnalyze);
+  $("ncList").addEventListener("click", (event) => {
+    const row = event.target.closest(".nc-row");
+    if (!row) return;
+    const motion = row.dataset.motion;
+    if (motion !== "") {
+      state.playing = false;
+      jumpToIndex(Number(motion));
+    }
+  });
+  $("xyMaterialBtn").addEventListener("click", () => {
+    state.xyMode = "material";
+    $("xyMaterialBtn").classList.add("active");
+    $("xyWorkBtn").classList.remove("active");
+    drawXY();
+  });
+  $("xyWorkBtn").addEventListener("click", () => {
+    state.xyMode = "work";
+    $("xyWorkBtn").classList.add("active");
+    $("xyMaterialBtn").classList.remove("active");
+    drawXY();
+  });
+  $("fileInput").addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      $("ncInput").value = reader.result;
+      loadNc(reader.result);
+    };
+    reader.readAsText(file);
+  });
+  const drop = $("fileDrop");
+  ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.add("drag");
+  }));
+  ["dragleave", "drop"].forEach((name) => drop.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.remove("drag");
+  }));
+  drop.addEventListener("drop", (event) => {
+    const file = event.dataTransfer.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      $("ncInput").value = reader.result;
+      loadNc(reader.result);
+    };
+    reader.readAsText(file);
+  });
+  window.addEventListener("resize", () => {
+    const host = $("threeViewport");
+    camera.aspect = host.clientWidth / host.clientHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(host.clientWidth, host.clientHeight);
+    drawSection();
+    drawXY();
+  });
 }
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[ch]);
 }
 
-function readFile(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    $("ncInput").value = reader.result;
-    setStatus("解析中", true);
-    analyze();
-  };
-  reader.readAsText(file);
-}
-
-function bindEvents() {
-  $("analyzeBtn").addEventListener("click", analyze);
-  $("ncInput").addEventListener("input", scheduleAnalyze);
-  $("jsonBtn").addEventListener("click", downloadJson);
-  $("coordCsvBtn").addEventListener("click", downloadCoordCsv);
-  $("checkCsvBtn").addEventListener("click", downloadCheckCsv);
-  $("fitMaterialBtn").addEventListener("click", () => setPreviewMode("material"));
-  $("fitWorkBtn").addEventListener("click", () => setPreviewMode("work"));
-  $("coordTable").querySelector("tbody").addEventListener("click", (event) => {
-    const row = event.target.closest("tr[data-line]");
-    if (row) highlightLine(row.dataset.line);
-  });
-  $("fileInput").addEventListener("change", (event) => {
-    const file = event.target.files?.[0];
-    if (file) readFile(file);
-  });
-  $("machiningFace").addEventListener("change", () => {
-    const face = config.faces?.[$("machiningFace").value];
-    if (!face) return;
-    $("machineOriginX").value = face.machineOriginX;
-    $("machineOriginY").value = face.machineOriginY;
-    saveConfig();
-    renderZSummary();
-  });
-  fields.forEach((name) => {
-    $(name).addEventListener("change", () => {
-      saveConfig();
-      renderZSummary();
-      if ($("ncInput").value.trim()) scheduleAnalyze();
-    });
-  });
-  const dropZone = $("dropZone");
-  ["dragenter", "dragover"].forEach((eventName) => {
-    dropZone.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      dropZone.classList.add("drag");
-    });
-  });
-  ["dragleave", "drop"].forEach((eventName) => {
-    dropZone.addEventListener(eventName, (event) => {
-      event.preventDefault();
-      dropZone.classList.remove("drag");
-    });
-  });
-  dropZone.addEventListener("drop", (event) => {
-    const file = event.dataTransfer.files?.[0];
-    if (file) readFile(file);
-  });
-  const xyCanvas = $("xyCanvas");
-  xyCanvas.addEventListener("wheel", (event) => {
-    if (!analysis) return;
-    event.preventDefault();
-    const rect = xyCanvas.getBoundingClientRect();
-    const mouse = { x: event.clientX - rect.left, y: event.clientY - rect.top };
-    const before = screenToWorld(mouse);
-    const zoom = event.deltaY < 0 ? 1.15 : 0.87;
-    xyView.scale *= zoom;
-    xyView.offsetX = mouse.x - before.x * xyView.scale;
-    xyView.offsetY = mouse.y + before.y * xyView.scale;
-    drawXY(analysis, true);
-  });
-  xyCanvas.addEventListener("mousedown", (event) => {
-    panState.active = true;
-    panState.x = event.clientX;
-    panState.y = event.clientY;
-  });
-  window.addEventListener("mouseup", () => {
-    panState.active = false;
-  });
-  window.addEventListener("mousemove", (event) => {
-    if (!panState.active || !analysis) return;
-    xyView.offsetX += event.clientX - panState.x;
-    xyView.offsetY += event.clientY - panState.y;
-    panState.x = event.clientX;
-    panState.y = event.clientY;
-    drawXY(analysis, true);
-  });
-  xyCanvas.addEventListener("dblclick", () => {
-    if (!analysis) return;
-    resetXYView(analysis);
-    drawXY(analysis, true);
-  });
-  xyCanvas.addEventListener("click", (event) => {
-    if (panState.active) return;
-    const hit = nearestXYHit(event);
-    if (hit) highlightLine(hit.line, true);
-  });
-  xyCanvas.addEventListener("mousemove", (event) => {
-    if (panState.active) return;
-    const hit = nearestXYHit(event);
-    if (hit?.segment) {
-      showTooltip("xyTooltip", event, segmentTooltip(hit.segment));
-    } else if (hit?.event) {
-      showTooltip("xyTooltip", event, [`行 ${hit.event.line} ${hit.event.type}`, `T${hit.event.tool || "-"}`, `X ${fmt(hit.event.x)}  Y ${fmt(hit.event.y)}`].join("\n"));
-    } else {
-      hideTooltip("xyTooltip");
-    }
-  });
-  xyCanvas.addEventListener("mouseleave", () => hideTooltip("xyTooltip"));
-
-  const zCanvas = $("zCanvas");
-  zCanvas.addEventListener("mousemove", (event) => {
-    const hit = nearestZHit(event);
-    if (hit) {
-      showTooltip("zTooltip", event, [`行 ${hit.line}`, `Z ${fmt(hit.point.z)}`, `dZ ${fmt(hit.point.dz)}`, `${hit.point.mode} F${fmt(hit.point.f, 0)} S${fmt(hit.point.s, 0)} T${fmt(hit.point.t, 0)}`].join("\n"));
-    } else {
-      hideTooltip("zTooltip");
-    }
-  });
-  zCanvas.addEventListener("click", (event) => {
-    const hit = nearestZHit(event);
-    if (hit) highlightLine(hit.line, true);
-  });
-  zCanvas.addEventListener("mouseleave", () => hideTooltip("zTooltip"));
-  window.addEventListener("resize", () => {
-    if (analysis) {
-      xyView.initialized = false;
-      drawXY(analysis);
-      drawZ(analysis);
-    }
-  });
-}
-
-renderConfig();
+initThree();
 bindEvents();
+renderSummary();
+renderSafety();
+drawSection();
+drawXY();

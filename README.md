@@ -1,6 +1,6 @@
-# SHINX NC Viewer
+# SHINX Motion Viewer
 
-Fusion 360のSHINX 20ZXGN専用ポストから出力されたNCコードを、実機投入前に確認するWebビューアです。
+Fusion 360のSHINX 20ZXGN専用ポストから出力されたNCコードを、実機投入前に再生確認するNCシミュレーターです。
 
 ## Web版
 
@@ -9,21 +9,19 @@ GitHub Pagesで公開する静的Web版は `docs/` にあります。
 - サーバー不要
 - NC変換やNC生成は行いません
 - Gコードは外部送信しません
-- 設定はlocalStorageに保存
-- SHINX用NCのG90/G91、座標、工具、Z、Mコードを解析
-- 2D XYプレビューと安全チェックを表示
-- 解析結果JSON、座標CSV、安全チェックCSVを保存
+- Three.jsで材料、工具、工具軌跡、G92加工原点、機械原点を可視化
+- NCを1行ずつ再生し、現在行と工具位置を同期
+- 断面Z、XY、現在座標、安全チェックを表示
+- 材料厚、SafeZ、ApproachZ、加工範囲、加工時間、工具数をNCから自動推定
 
-## SHINX NC Viewer
+## SHINX Motion Viewer
 
-ビューアでは、ポスト出力済みNCの以下を確認します。
+シミュレーターでは、ポスト出力済みNCの以下を確認します。
 
-- G90/G91の座標追跡
-- 各行の実行後X/Y/Z
-- G92、M21、P9000/P9900、G218/G219、M92/M95の有無
-- SafeZ、ApproachZ、材料上面Z、最深Z
-- G00/G01/G02/G03の2D XY表示
-- 工具ごとの加工範囲と警告数
+- 工具が今どこにいるか
+- あと何mmで材料に入るか
+- 現在どのNC行を実行しているか
+- G92、機械原点、SafeZ、ApproachZ、工具交換、SHINXマクロを含めた機械動作
 
 ## ローカルFastAPI版
 

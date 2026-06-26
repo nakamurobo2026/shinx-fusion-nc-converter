@@ -3,133 +3,106 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SHINX NC Viewer</title>
+    <title>SHINX Motion Viewer</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <h1>SHINX NC Viewer</h1>
-        <p>Fusion SHINX専用ポスト出力NCの確認ビューア</p>
+      <div class="brand">
+        <h1>SHINX Motion Viewer</h1>
+        <p>SHINX 20ZXGN NC Simulator</p>
       </div>
-      <div class="actions">
-        <span id="analysisStatus" class="status-pill">待機中</span>
-        <button id="analyzeBtn">解析</button>
-        <button id="jsonBtn" disabled>JSON</button>
-        <button id="coordCsvBtn" disabled>座標CSV</button>
-        <button id="checkCsvBtn" disabled>チェックCSV</button>
+
+      <label id="fileDrop" class="file-drop">
+        <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
+        <span>NC読込</span>
+      </label>
+
+      <div class="transport">
+        <button id="playBtn" title="再生">▶</button>
+        <button id="pauseBtn" title="一時停止">⏸</button>
+        <button id="stopBtn" title="停止">■</button>
+        <button id="prevBtn" title="1行戻る"><<</button>
+        <button id="nextBtn" title="1行送り">>></button>
+        <select id="speedSelect" title="再生速度">
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="2">2×</option>
+          <option value="5">5×</option>
+          <option value="10">10×</option>
+          <option value="100">100×</option>
+        </select>
+      </div>
+
+      <div class="now-line">
+        <span>現在行</span>
+        <strong id="currentLineLabel">----</strong>
       </div>
     </header>
 
-    <main class="viewer-layout">
-      <aside class="side-panel">
-        <section>
-          <h2>設定</h2>
-          <label>加工面<select id="machiningFace"></select></label>
-          <div class="grid2">
-            <label>材料厚<input id="materialThickness" type="number" step="0.001" /></label>
-            <label>安全余裕<input id="safeClearance" type="number" step="0.001" /></label>
-            <label>接近余裕<input id="approachClearance" type="number" step="0.001" /></label>
-            <label>許容突抜<input id="allowOvercut" type="number" step="0.001" /></label>
-            <label>材料X<input id="materialX" type="number" step="0.001" /></label>
-            <label>材料Y<input id="materialY" type="number" step="0.001" /></label>
-            <label>機械原点X<input id="machineOriginX" type="number" step="0.001" /></label>
-            <label>機械原点Y<input id="machineOriginY" type="number" step="0.001" /></label>
+    <main class="motion-layout">
+      <section class="motion-panel">
+        <div class="panel-title">
+          <h2>SHINX Motion Viewer</h2>
+          <div id="viewerStatus" class="status">NC未読込</div>
+        </div>
+        <div id="threeViewport" class="three-viewport"></div>
+        <div class="hud">
+          <div><span>X</span><strong id="hudX">0.000</strong></div>
+          <div><span>Y</span><strong id="hudY">0.000</strong></div>
+          <div><span>Z</span><strong id="hudZ">0.000</strong></div>
+          <div><span>F</span><strong id="hudF">-</strong></div>
+          <div><span>S</span><strong id="hudS">-</strong></div>
+          <div><span>T</span><strong id="hudT">-</strong></div>
+        </div>
+      </section>
+
+      <aside class="right-panel">
+        <section class="summary-panel">
+          <h2>自動判定</h2>
+          <div id="summaryGrid" class="summary-grid"></div>
+        </section>
+
+        <section class="section-panel">
+          <h2>断面 Z</h2>
+          <div class="canvas-box">
+            <canvas id="sectionCanvas" width="360" height="320"></canvas>
           </div>
         </section>
 
-        <section>
-          <h2>Z基準</h2>
-          <div id="zSummary" class="metric-list"></div>
+        <section class="section-panel">
+          <div class="panel-row">
+            <h2>XY</h2>
+            <div class="toggle-group">
+              <button id="xyMaterialBtn" class="mini active">材料</button>
+              <button id="xyWorkBtn" class="mini">加工</button>
+            </div>
+          </div>
+          <div class="canvas-box small">
+            <canvas id="xyCanvas" width="360" height="220"></canvas>
+          </div>
         </section>
 
-        <section>
+        <section class="safety-panel">
           <h2>安全チェック</h2>
-          <div id="checkSummary" class="check-summary"></div>
-          <div id="checkList" class="check-list"></div>
-        </section>
-
-        <section>
-          <h2>工具</h2>
-          <div id="toolList" class="tool-list"></div>
+          <div id="safetyState" class="safety-state ok">正常</div>
+          <div id="safetyList" class="safety-list"></div>
         </section>
       </aside>
 
-      <section class="code-panel">
-        <div id="dropZone" class="dropzone">
-          <strong>SHINX NCをドロップ</strong>
-          <span>.nc / .txt を読み込み、または下へ貼り付け</span>
-          <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
+      <section class="bottom-panel">
+        <div class="timeline-wrap">
+          <input id="timeline" type="range" min="0" max="0" value="0" />
+          <span id="timeLabel">00:00 / 00:00</span>
         </div>
-        <textarea id="ncInput" spellcheck="false" placeholder="FusionのSHINX専用ポストから出力したNCコードを貼り付け"></textarea>
-      </section>
-
-      <section class="table-panel">
-        <div class="panel-head">
-          <h2>座標一覧</h2>
-          <span id="lineCount">0 行</span>
-        </div>
-        <div class="table-wrap">
-          <table id="coordTable">
-            <thead>
-              <tr>
-                <th>行</th>
-                <th>元NC行</th>
-                <th>G</th>
-                <th>Mode</th>
-                <th>X</th>
-                <th>Y</th>
-                <th>Z</th>
-                <th>F</th>
-                <th>S</th>
-                <th>T</th>
-                <th>工具</th>
-                <th>警告</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
-
-      <section class="preview-panel">
-        <div class="panel-head">
-          <h2>2D XYプレビュー</h2>
-          <div class="panel-tools">
-            <button id="fitMaterialBtn" class="tool-btn active" type="button">材料全体</button>
-            <button id="fitWorkBtn" class="tool-btn" type="button">加工範囲</button>
-            <span id="rangeSummary"></span>
-          </div>
-        </div>
-        <div class="canvas-wrap">
-          <canvas id="xyCanvas" width="900" height="420"></canvas>
-          <div id="xyTooltip" class="canvas-tooltip" hidden></div>
-        </div>
-        <div class="legend">
-          <span><i class="legend-material"></i>材料外形</span>
-          <span><i class="legend-range"></i>加工範囲</span>
-          <span><i class="legend-rapid"></i>G00 早送り</span>
-          <span><i class="legend-cut"></i>G01 切削</span>
-          <span><i class="legend-arc"></i>G02/G03 円弧</span>
-          <span><i class="legend-origin"></i>原点</span>
-          <span><i class="legend-start"></i>開始点</span>
-          <span><i class="legend-end"></i>終了点</span>
-          <span><i class="legend-tool"></i>工具交換</span>
-        </div>
-      </section>
-
-      <section class="z-panel">
-        <div class="panel-head">
-          <h2>Zビュー</h2>
-          <span id="zRangeSummary"></span>
-        </div>
-        <div class="canvas-wrap">
-          <canvas id="zCanvas" width="900" height="220"></canvas>
-          <div id="zTooltip" class="canvas-tooltip" hidden></div>
+        <div class="nc-area">
+          <textarea id="ncInput" spellcheck="false" placeholder="SHINX専用ポストから出力したNCコードを貼り付け"></textarea>
+          <div id="ncList" class="nc-list"></div>
         </div>
       </section>
     </main>
 
-    <script src="./app.js"></script>
+    <script type="module" src="./app.js"></script>
   </body>
 </html>
