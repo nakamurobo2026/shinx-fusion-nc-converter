@@ -4,7 +4,7 @@
 
 ## ダウンロード
 
-[shinx_20zxgn.cps](https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps)
+[shinx_20zxgn.cps](https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps?cachebust=35de7f5)
 
 ## 設計方針
 
