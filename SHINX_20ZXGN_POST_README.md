@@ -50,16 +50,30 @@ G92 X0.000 Y0.000
 M21
 G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
+G90 G00 Z{approach_z}
 ```
 
 この後の加工本文はFusion標準のFanuc系モーション出力をそのまま使用します。
+
+`autoSafeHeight` が `true` の場合:
+
+```text
+safeZ = materialThickness + safeClearance
+approachZ = materialThickness + approachClearance
+```
+
+材料厚は Fusion Setup の Stock 厚み、Model Bounding Box、`manualMaterialThickness` の順で取得します。
 
 ## ポストプロパティ
 
 - `machiningFace`: 加工面番号。初期値は8。
 - `machineOriginX`: 機械側加工原点X。初期値 `-1303.520`。
 - `machineOriginY`: 機械側加工原点Y。初期値 `-2610.910`。
-- `safeZ`: G92後の安全Z。初期値 `60.0`。
+- `safeZ`: `autoSafeHeight=false` の時に使う手動安全Z。初期値 `60.0`。
+- `autoSafeHeight`: 材料厚から安全高さ/接近高さを自動計算する。初期値 `true`。
+- `safeClearance`: 材料厚へ足す安全余裕。初期値 `20.0`。
+- `approachClearance`: 材料厚へ足す接近余裕。初期値 `5.0`。
+- `manualMaterialThickness`: Fusionから材料厚を取得できない場合の手動材料厚。初期値 `30.0`。
 - `spindleSpeedOverride`: 0ならFusion工程のS値を使用。0以外なら固定S値。
 - `useToolMapping`: Fusion工具番号をSHINX工具番号へ変換する。
 - `tool1Mapped` ... `tool7Mapped`: 工具番号マッピング。

@@ -20,7 +20,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-standard-motion1";
+var SHINX_POST_VERSION = "2026-06-26-auto-height1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -59,10 +59,42 @@ properties = {
   },
   safeZ: {
     title: "Safe Z",
-    description: "SHINX safe Z after G92 origin setup.",
+    description: "Manual SHINX safe Z used when autoSafeHeight is false.",
     group: "shinx",
     type: "number",
     value: 60.0,
+    scope: "post"
+  },
+  autoSafeHeight: {
+    title: "Auto safe height",
+    description: "Calculate SHINX safe/approach heights from stock or model thickness.",
+    group: "shinx",
+    type: "boolean",
+    value: true,
+    scope: "post"
+  },
+  safeClearance: {
+    title: "Safe clearance",
+    description: "Clearance added to material thickness for safe Z.",
+    group: "shinx",
+    type: "number",
+    value: 20.0,
+    scope: "post"
+  },
+  approachClearance: {
+    title: "Approach clearance",
+    description: "Clearance added to material thickness for approach Z.",
+    group: "shinx",
+    type: "number",
+    value: 5.0,
+    scope: "post"
+  },
+  manualMaterialThickness: {
+    title: "Manual material thickness",
+    description: "Fallback material thickness when stock/model thickness cannot be read.",
+    group: "shinx",
+    type: "number",
+    value: 30.0,
     scope: "post"
   },
   spindleSpeedOverride: {
@@ -108,6 +140,8 @@ var spindleIsOn = false;
 var xOutput = undefined;
 var yOutput = undefined;
 var zOutput = undefined;
+var materialThickness = undefined;
+var materialThicknessSource = undefined;
 
 function pad(value, width) {
   var text = String(value);
@@ -211,6 +245,124 @@ function forceXYZ(x, y, z) {
   zOutput = z;
 }
 
+function extractBoxThickness(candidate) {
+  if (!candidate) {
+    return undefined;
+  }
+  try {
+    var upper = undefined;
+    var lower = undefined;
+    if (candidate.upper && candidate.lower) {
+      upper = candidate.upper;
+      lower = candidate.lower;
+    } else if (candidate.maximum && candidate.minimum) {
+      upper = candidate.maximum;
+      lower = candidate.minimum;
+    } else if (candidate.max && candidate.min) {
+      upper = candidate.max;
+      lower = candidate.min;
+    } else if (candidate.high && candidate.low) {
+      upper = candidate.high;
+      lower = candidate.low;
+    } else if (typeof candidate.getUpper == "function" && typeof candidate.getLower == "function") {
+      upper = candidate.getUpper();
+      lower = candidate.getLower();
+    } else if (typeof candidate.getMaximum == "function" && typeof candidate.getMinimum == "function") {
+      upper = candidate.getMaximum();
+      lower = candidate.getMinimum();
+    }
+    if (upper && lower && upper.z !== undefined && lower.z !== undefined) {
+      return Math.abs(upper.z - lower.z);
+    }
+  } catch (e) {
+  }
+  return undefined;
+}
+
+function resolveMaterialThickness() {
+  if (materialThickness !== undefined) {
+    return materialThickness;
+  }
+
+  var thickness = undefined;
+  try {
+    if (currentSection && typeof currentSection.getWorkpiece == "function") {
+      thickness = extractBoxThickness(currentSection.getWorkpiece());
+      if (thickness !== undefined) {
+        materialThickness = thickness;
+        materialThicknessSource = "currentSection.getWorkpiece";
+        return materialThickness;
+      }
+    }
+  } catch (e1) {
+  }
+  try {
+    if (typeof getWorkpiece == "function") {
+      thickness = extractBoxThickness(getWorkpiece());
+      if (thickness !== undefined) {
+        materialThickness = thickness;
+        materialThicknessSource = "getWorkpiece";
+        return materialThickness;
+      }
+    }
+  } catch (e2) {
+  }
+  try {
+    if (currentSection && typeof currentSection.getSetup == "function") {
+      var setup = currentSection.getSetup();
+      thickness = extractBoxThickness(setup && (setup.stock || setup.workpiece));
+      if (thickness !== undefined) {
+        materialThickness = thickness;
+        materialThicknessSource = "currentSection.getSetup.stock";
+        return materialThickness;
+      }
+    }
+  } catch (e3) {
+  }
+
+  try {
+    if (typeof getModelBoundingBox == "function") {
+      thickness = extractBoxThickness(getModelBoundingBox());
+      if (thickness !== undefined) {
+        materialThickness = thickness;
+        materialThicknessSource = "getModelBoundingBox";
+        return materialThickness;
+      }
+    }
+  } catch (e4) {
+  }
+  try {
+    if (currentSection && typeof currentSection.getModelBoundingBox == "function") {
+      thickness = extractBoxThickness(currentSection.getModelBoundingBox());
+      if (thickness !== undefined) {
+        materialThickness = thickness;
+        materialThicknessSource = "currentSection.getModelBoundingBox";
+        return materialThickness;
+      }
+    }
+  } catch (e5) {
+  }
+
+  materialThickness = getProperty("manualMaterialThickness");
+  materialThicknessSource = "manualMaterialThickness";
+  warning("Could not read Fusion stock/model thickness. Using manualMaterialThickness " + fmt(materialThickness) + ".");
+  return materialThickness;
+}
+
+function getSafeZ() {
+  if (!getProperty("autoSafeHeight")) {
+    return getProperty("safeZ");
+  }
+  return resolveMaterialThickness() + getProperty("safeClearance");
+}
+
+function getApproachZ() {
+  if (!getProperty("autoSafeHeight")) {
+    return undefined;
+  }
+  return resolveMaterialThickness() + getProperty("approachClearance");
+}
+
 function getMappedToolNumber(fusionToolNumber) {
   if (!getProperty("useToolMapping")) {
     return fusionToolNumber;
@@ -241,12 +393,13 @@ function getInitialPositionXY() {
 }
 
 function writeOriginSetup() {
+  var safeZ = getSafeZ();
   writeShinxBlock("G90 G00", "X" + fmt(getProperty("machineOriginX")), "Y" + fmt(getProperty("machineOriginY")));
   writeShinxBlock("G92", "X 0.000", "Y 0.000");
   writeShinxBlock("M21");
-  writeShinxBlock("G90 G00", "Z " + fmt(getProperty("safeZ")));
+  writeShinxBlock("G90 G00", "Z " + fmt(safeZ));
   resetMotionModals();
-  forceXYZ(undefined, undefined, getProperty("safeZ"));
+  forceXYZ(undefined, undefined, safeZ);
 }
 
 function writeSpindleStart(speed) {
@@ -295,9 +448,13 @@ function writeToolChange(shinxTool, speed) {
 
 function writeFirstXYMove() {
   var initial = getInitialPositionXY();
+  var approachZ = getApproachZ();
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
+  if (approachZ !== undefined) {
+    writeShinxBlock("G90 G00", "Z " + fmt(approachZ));
+  }
   resetMotionModals();
-  forceXYZ(initial.x, initial.y, getProperty("safeZ"));
+  forceXYZ(initial.x, initial.y, approachZ !== undefined ? approachZ : getSafeZ());
 }
 
 function writeMotion(code, x, y, z, feed) {
@@ -358,9 +515,10 @@ function onSection() {
     writeToolChange(shinxTool, speed);
     currentFusionTool = fusionTool;
   } else {
-    writeShinxBlock("G90 G00", "Z" + fmt(getProperty("safeZ")));
+    var safeZ = getSafeZ();
+    writeShinxBlock("G90 G00", "Z" + fmt(safeZ));
     resetMotionModals();
-    forceXYZ(undefined, undefined, getProperty("safeZ"));
+    forceXYZ(undefined, undefined, safeZ);
   }
 
   writeFirstXYMove();
