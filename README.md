@@ -27,9 +27,8 @@ G91 G01 Z-{approach_clearance} F{plunge_feed}
 ```
 
 `first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
-Fusion 360専用ポスト `shinx_20zxgn.cps` では、G91は接近高さから材料上面への初期下降だけに限定します。
-加工中ZはFusionのZ値をそのまま出さず、`SHINX_Z = materialThickness + Fusion_Z` として材料厚基準のG90値で出力します。
-XY、送り、円弧はFusionのFanuc系モーション出力を基本保持します。
+Fusion 360専用ポスト `shinx_20zxgn.cps` では、最初の位置決めをG90で行い、材料上面への下降後の加工本文はG91差分で出力します。
+Fusionの工具経路は再計算せず、前回Fusion位置からのX/Y/Z差分、送り、R円弧を出力します。
 専用ポストの `safe_z` / `approach_z` は `autoSafeHeight=true` の時、材料厚 + 余裕量から自動計算します。
 
 ## ローカルFastAPI版

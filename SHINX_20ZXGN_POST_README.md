@@ -11,8 +11,8 @@
 - Fusionが計算したX/Y、送り、円弧を基本保持します。
 - `rawZ - sectionInitial.z` のような独自Z補正は行いません。
 - Z値のクランプは行いません。
-- G91は接近高さから材料上面への初期下降だけに限定します。
-- 加工中ZはFusionのZ値をそのまま出さず、`SHINX_Z = materialThickness + Fusion_Z` として材料厚基準のG90値で出力します。
+- 最初の位置決めはG90で行い、材料上面への下降後の加工本文はG91差分で出力します。
+- Fusionの工具経路は再計算せず、前回Fusion位置からのX/Y/Z差分、送り、R円弧を出力します。
 - SHINX固有のヘッダー、フッター、工具マクロ、G92原点補完だけを差し込みます。
 
 ## 導入方法
@@ -55,9 +55,8 @@ G90 G00 Z{approach_z}
 G91 G01 Z-{approach_clearance} F{plunge_feed}
 ```
 
-この後の加工本文では、FusionのZ値をそのまま出さず、`SHINX_Z = materialThickness + Fusion_Z` としてG90で出力します。
-G91は材料上面への初期下降だけに限定します。
-XY、送り、円弧はFusionのFanuc系モーション出力を基本保持します。
+この後の加工本文では、Fusionの絶対位置を前回Fusion位置からのX/Y/Z差分にしてG91で出力します。
+送り、R円弧はFusionのFanuc系モーション出力を基本保持します。
 
 `autoSafeHeight` が `true` の場合:
 
