@@ -61,8 +61,8 @@ def parse_program(text: str) -> ParsedProgram:
         "max_z": None,
     }
     modal = {"distance": None, "motion": None}
-    allowed_g = {0, 1, 2, 3, 40, 41, 42, 90, 91}
-    allowed_letters = {"G", "X", "Y", "Z", "R", "F", "S"}
+    allowed_g = {0, 1, 2, 3, 17, 18, 19, 40, 41, 42, 90, 91}
+    allowed_letters = {"G", "X", "Y", "Z", "I", "J", "K", "R", "F", "S"}
     hazardous_m = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 23, 30, 92, 95}
 
     for raw in original_lines:
@@ -102,7 +102,7 @@ def parse_program(text: str) -> ParsedProgram:
                     modal["motion"] = f"G{code:02d}"
                 if code in {90, 91}:
                     modal["distance"] = f"G{code}"
-            elif letter in {"X", "Y", "Z", "R"}:
+            elif letter in {"X", "Y", "Z", "I", "J", "K", "R"}:
                 kept_words.append(f"{letter}{value:.3f}")
                 axis_key_min = f"min_{letter.lower()}"
                 axis_key_max = f"max_{letter.lower()}"

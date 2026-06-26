@@ -11,6 +11,7 @@ GitHub Pagesで公開する静的Web版は `docs/` にあります。
 - Gコードは外部送信しません
 - 設定はlocalStorageに保存
 - `.nc` / `.txt` で保存
+- Fusionの `FANUC (with G91)` / `fanuc incremental.cps` 由来のインクリメンタル出力とI/J/K円弧に対応
 
 ## ローカルFastAPI版
 

@@ -45,7 +45,7 @@ const fields = [
   "clearance",
 ];
 
-const allowedG = new Set([0, 1, 2, 3, 40, 41, 42, 90, 91]);
+const allowedG = new Set([0, 1, 2, 3, 17, 18, 19, 40, 41, 42, 90, 91]);
 const hazardousM = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 23, 30, 92, 95]);
 const $ = (id) => document.getElementById(id);
 let currentConfig = loadConfig();
@@ -173,10 +173,10 @@ function parseProgram(text) {
         kept.push(`G${String(code).padStart(2, "0")}`);
         if ([0, 1, 2, 3].includes(code)) modal.motion = `G${String(code).padStart(2, "0")}`;
         if ([90, 91].includes(code)) modal.distance = `G${code}`;
-      } else if (["X", "Y", "Z", "R"].includes(letter)) {
+      } else if (["X", "Y", "Z", "I", "J", "K", "R"].includes(letter)) {
         kept.push(`${letter}${value.toFixed(3)}`);
         const axis = letter.toLowerCase();
-        if (axis !== "r") {
+        if (!["i", "j", "k", "r"].includes(axis)) {
           const minKey = `min_${axis}`;
           const maxKey = `max_${axis}`;
           ranges[minKey] = ranges[minKey] === null ? value : Math.min(ranges[minKey], value);
