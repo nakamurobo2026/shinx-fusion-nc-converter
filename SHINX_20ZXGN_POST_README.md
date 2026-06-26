@@ -50,11 +50,10 @@ G92 X0.000 Y0.000
 M21
 G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
-G90 G00 Z{approach_z}
-G91 G01 Z-{cut_depth} F{plunge_feed}
 ```
 
 `first_cut_x` / `first_cut_y` はFusionの各工程の初期位置から取得します。
+以降のZ移動はポスト側の固定値ではなく、FusionのツールパスZを工程初期Z基準に変換して出力します。
 
 ## ポストプロパティ
 
@@ -62,10 +61,9 @@ G91 G01 Z-{cut_depth} F{plunge_feed}
 - `machineOriginX`: 機械側加工原点X。初期値 `-1303.520`。
 - `machineOriginY`: 機械側加工原点Y。初期値 `-2610.910`。
 - `safeZ`: G92後の安全Z。初期値 `60.0`。
-- `approachZ`: 加工開始前の接近Z。初期値 `5.0`。
 - `spindleSpeedOverride`: 0ならFusion工程のS値を使用。0以外なら固定S値。
-- `plungeFeed`: 初期下降送り。初期値 `1500`。
-- `maxDepth`: 最大深さ兼、初期下降深さ。初期値 `31.0`。
+- `maxDepth`: Fusion Z変換後の深さ警告しきい値。初期値 `31.0`。
+- `debugZLog`: Z変換調査用コメントを出力する。
 - `useToolMapping`: Fusion工具番号をSHINX工具番号へ変換する。
 - `tool1Mapped` ... `tool7Mapped`: 工具番号マッピング。
 

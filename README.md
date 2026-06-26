@@ -22,11 +22,10 @@ G90 G00 X{machine_origin_x} Y{machine_origin_y}
 G92 X0.000 Y0.000
 G90 G00 Z{safe_z}
 G90 G00 X{first_cut_x} Y{first_cut_y}
-G90 G00 Z{approach_z}
-G90 G01 Z-{cut_start_depth} F{plunge_feed}
 ```
 
 `first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
+Fusion 360専用ポスト `shinx_20zxgn.cps` では、ポスト固定の接近Z/下降深さではなくFusionのツールパスZを工程初期Z基準に変換して出力します。
 
 ## ローカルFastAPI版
 

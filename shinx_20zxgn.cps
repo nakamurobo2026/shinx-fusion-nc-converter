@@ -21,7 +21,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-zdebug1";
+var SHINX_POST_VERSION = "2026-06-26-zfusion1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -66,14 +66,6 @@ properties = {
     value: 60.0,
     scope: "post"
   },
-  approachZ: {
-    title: "Approach Z",
-    description: "Approach Z before plunging to the machining depth.",
-    group: "shinx",
-    type: "number",
-    value: 5.0,
-    scope: "post"
-  },
   spindleSpeedOverride: {
     title: "Spindle speed override",
     description: "0 uses Fusion operation spindle speed. Non-zero forces this S value.",
@@ -82,17 +74,9 @@ properties = {
     value: 0,
     scope: "post"
   },
-  plungeFeed: {
-    title: "Plunge feed",
-    description: "Feed used for the initial G91 plunge.",
-    group: "shinx",
-    type: "integer",
-    value: 1500,
-    scope: "post"
-  },
   maxDepth: {
     title: "Max depth",
-    description: "Maximum allowed depth and initial plunge depth.",
+    description: "Warning threshold for Fusion Z depth after section initial Z is treated as zero.",
     group: "shinx",
     type: "number",
     value: 31.0,
@@ -138,12 +122,12 @@ var currentFeed = undefined;
 var currentMode = 90;
 var pendingSectionInitial = undefined;
 var pendingInitialSkips = 0;
+var sectionZOrigin = undefined;
 var originWasResetAfterToolChange = false;
 var firstOutputDone = false;
 var spindleIsOn = false;
 var pendingRadiusCompensation = -1;
 var depthWarningIssued = false;
-var fusionZIgnoredWarningIssued = false;
 
 function pad(value, width) {
   var text = String(value);
@@ -215,6 +199,16 @@ function getWorkOffsetForDebug() {
   } catch (e) {
   }
   return "NA";
+}
+
+function transformFusionZ(z) {
+  if (z === undefined) {
+    return undefined;
+  }
+  if (sectionZOrigin === undefined) {
+    return z;
+  }
+  return z - sectionZOrigin;
 }
 
 function writeDebugZ(source, rawZ, outputZ, mode) {
@@ -298,18 +292,15 @@ function writeCutStart(initial) {
   if (!originWasResetAfterToolChange) {
     error("Origin reset sequence is missing before machining start.");
   }
+  sectionZOrigin = initial.z;
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
-  writeDebugZ("writeCutStart-approach", initial.z, getProperty("approachZ"), "G90");
-  writeShinxBlock("G90 G00", "Z" + fmt(getProperty("approachZ")));
-  writeDebugZ("writeCutStart-plunge", initial.z, -getProperty("maxDepth"), "G91");
-  writeShinxBlock("G91 G01", "Z-" + fmt(getProperty("maxDepth")), "F" + feedFormat.format(getProperty("plungeFeed")));
-  currentFeed = feedFormat.format(getProperty("plungeFeed"));
-  currentMode = 91;
+  writeDebugZ("writeCutStart-fusionZOrigin", initial.z, 0, "G90");
+  currentMode = 90;
   currentPosition.x = initial.x;
   currentPosition.y = initial.y;
-  currentPosition.z = getProperty("approachZ") - getProperty("maxDepth");
+  currentPosition.z = getProperty("safeZ");
   pendingSectionInitial = initial;
-  pendingInitialSkips = 20;
+  pendingInitialSkips = 3;
 }
 
 function writeSpindleStart(speed) {
@@ -360,6 +351,10 @@ function shouldSkipInitialMove(x, y, z) {
   if (!pendingSectionInitial || pendingInitialSkips <= 0) {
     return false;
   }
+  if (z !== undefined) {
+    pendingSectionInitial = undefined;
+    return false;
+  }
   if (x !== undefined && Math.abs(x - pendingSectionInitial.x) > 0.001) {
     pendingSectionInitial = undefined;
     return false;
@@ -372,29 +367,11 @@ function shouldSkipInitialMove(x, y, z) {
   return true;
 }
 
-function shouldIgnoreFusionCutZ(gCode, z) {
-  if (z === undefined) {
-    return false;
-  }
-  if (gCode == "G90 G01" || gCode == "G02" || gCode == "G03") {
-    if (!fusionZIgnoredWarningIssued) {
-      warning("Fusion absolute cutting Z values are ignored. SHINX cutting depth is controlled by the post's approachZ and maxDepth sequence.");
-      fusionZIgnoredWarningIssued = true;
-    }
-    return true;
-  }
-  return false;
-}
-
 function writeMotion(gCode, x, y, z, r, feed, source) {
   var words = [gCode];
-  var ignoreZ = shouldIgnoreFusionCutZ(gCode, z);
-  var outputZ = ignoreZ ? undefined : z;
+  var outputZ = transformFusionZ(z);
   if (z !== undefined) {
     writeDebugZ(source || "writeMotion", z, outputZ, gCode.indexOf("G91") >= 0 ? "G91" : "G90");
-  }
-  if (gCode == "G90 G00" && (x !== undefined || y !== undefined) && currentPosition.z < getProperty("approachZ") - 0.001) {
-    error("Rapid XY move was requested after Z was lowered. XY positioning must occur at safeZ or approachZ.");
   }
   if (x !== undefined && !sameCoordinate(x, currentPosition.x)) {
     words.push("X" + fmt(x));
@@ -408,15 +385,15 @@ function writeMotion(gCode, x, y, z, r, feed, source) {
   if (y !== undefined) {
     currentPosition.y = y;
   }
-  if (z !== undefined && !ignoreZ) {
-    if (z < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
-      warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
+  if (outputZ !== undefined) {
+    if (outputZ < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
+      warning("Fusion Z depth " + fmt(outputZ) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
       depthWarningIssued = true;
     }
-    if (!sameCoordinate(z, currentPosition.z)) {
-      words.push("Z" + fmt(z));
+    if (!sameCoordinate(outputZ, currentPosition.z)) {
+      words.push("Z" + fmt(outputZ));
     }
-    currentPosition.z = z;
+    currentPosition.z = outputZ;
   }
   if (r !== undefined) {
     words.push("R" + fmt(r));
@@ -440,8 +417,7 @@ function writeLinearWithRadiusCompensation(x, y, z, feed, source) {
   }
 
   var words = ["G90 G01", comp];
-  var ignoreZ = shouldIgnoreFusionCutZ("G90 G01", z);
-  var outputZ = ignoreZ ? undefined : z;
+  var outputZ = transformFusionZ(z);
   if (z !== undefined) {
     writeDebugZ(source || "writeLinearWithRadiusCompensation", z, outputZ, "G90");
   }
@@ -460,15 +436,15 @@ function writeLinearWithRadiusCompensation(x, y, z, feed, source) {
   if (y !== undefined) {
     currentPosition.y = y;
   }
-  if (z !== undefined && !ignoreZ) {
-    if (z < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
-      warning("Z depth " + fmt(z) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
+  if (outputZ !== undefined) {
+    if (outputZ < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
+      warning("Fusion Z depth " + fmt(outputZ) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
       depthWarningIssued = true;
     }
-    if (!sameCoordinate(z, currentPosition.z)) {
-      words.push("Z" + fmt(z));
+    if (!sameCoordinate(outputZ, currentPosition.z)) {
+      words.push("Z" + fmt(outputZ));
     }
-    currentPosition.z = z;
+    currentPosition.z = outputZ;
   }
   var feedWord = getModalFeedWord(feed);
   if (feedWord) {
