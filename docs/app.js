@@ -540,7 +540,8 @@ function renderNcList() {
   $("ncList").innerHTML = state.analysis.rows.map((row) => {
     const active = row.line === activeLine ? " active" : "";
     const label = row.nNumber !== null && row.nNumber !== undefined ? `N${String(row.nNumber).padStart(6, "0")}` : `L${row.line}`;
-    return `<div class="nc-row${active}" data-motion="${row.motionIndex ?? ""}" data-line="${row.line}"><span class="line">${label}</span><span>${escapeHtml(row.raw)}</span></div>`;
+    const block = row.motionIndex !== null && row.motionIndex !== undefined ? `B${String(row.motionIndex + 1).padStart(4, "0")}` : "----";
+    return `<div class="nc-row${active}" data-motion="${row.motionIndex ?? ""}" data-line="${row.line}"><span class="line"><b>${block}</b>${label}</span><span>${escapeHtml(row.raw)}</span></div>`;
   }).join("");
   const active = $("ncList").querySelector(".nc-row.active");
   if (active) active.scrollIntoView({ block: "center" });
@@ -673,7 +674,8 @@ function loadNc(text) {
   state.analysis = analyzeNc(text);
   state.index = 0;
   state.analysis.segments.forEach((s) => { s.playhead = 0; });
-  $("viewerStatus").textContent = `${state.analysis.segments.length} motion blocks`;
+  updateCountLabels();
+  $("viewerStatus").textContent = `${state.analysis.segments.length} motion blocks / ${state.analysis.rows.length} lines`;
   renderSummary();
   renderSafety();
   renderNcList();
@@ -688,12 +690,35 @@ function scheduleAnalyze() {
   }, 300);
 }
 
+function updateCountLabels() {
+  const blocks = state.analysis.segments.length;
+  const lines = state.analysis.rows.length;
+  $("blockCountLabel").textContent = `${blocks} blocks / ${lines} lines`;
+  $("bottomCountLabel").textContent = `${blocks} motion blocks / ${lines} NC lines`;
+}
+
+function readNcFile(file) {
+  if (!file) return;
+  $("fileNameLabel").textContent = file.name;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const text = String(reader.result || "");
+    $("ncInput").value = text;
+    loadNc(text);
+  };
+  reader.onerror = () => {
+    $("viewerStatus").textContent = "ファイル読込エラー";
+  };
+  reader.readAsText(file);
+}
+
 function step(delta) {
   state.playing = false;
   jumpToIndex(state.index + delta);
 }
 
 function bindEvents() {
+  $("filePickBtn").addEventListener("click", () => $("fileInput").click());
   $("playBtn").addEventListener("click", () => { state.playing = true; });
   $("pauseBtn").addEventListener("click", () => { state.playing = false; });
   $("stopBtn").addEventListener("click", () => { state.playing = false; jumpToIndex(0); });
@@ -724,14 +749,8 @@ function bindEvents() {
     drawXY();
   });
   $("fileInput").addEventListener("change", (event) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      $("ncInput").value = reader.result;
-      loadNc(reader.result);
-    };
-    reader.readAsText(file);
+    readNcFile(event.target.files?.[0]);
+    event.target.value = "";
   });
   const drop = $("fileDrop");
   ["dragenter", "dragover"].forEach((name) => drop.addEventListener(name, (event) => {
@@ -743,14 +762,17 @@ function bindEvents() {
     drop.classList.remove("drag");
   }));
   drop.addEventListener("drop", (event) => {
-    const file = event.dataTransfer.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      $("ncInput").value = reader.result;
-      loadNc(reader.result);
-    };
-    reader.readAsText(file);
+    event.stopPropagation();
+    readNcFile(event.dataTransfer.files?.[0]);
+  });
+  ["dragenter", "dragover"].forEach((name) => document.addEventListener(name, (event) => {
+    event.preventDefault();
+    drop.classList.add("drag");
+  }));
+  ["dragleave", "drop"].forEach((name) => document.addEventListener(name, (event) => {
+    event.preventDefault();
+    if (name === "drop") readNcFile(event.dataTransfer.files?.[0]);
+    drop.classList.remove("drag");
   });
   window.addEventListener("resize", () => {
     const host = $("threeViewport");
@@ -770,5 +792,6 @@ initThree();
 bindEvents();
 renderSummary();
 renderSafety();
+updateCountLabels();
 drawSection();
 drawXY();

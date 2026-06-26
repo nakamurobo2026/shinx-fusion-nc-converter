@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SHINX Motion Viewer</title>
     <link rel="stylesheet" href="./style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.165.0/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -13,10 +20,11 @@
         <p>SHINX 20ZXGN NC Simulator</p>
       </div>
 
-      <label id="fileDrop" class="file-drop">
+      <div id="fileDrop" class="file-drop">
+        <button id="filePickBtn" type="button">NC読込</button>
+        <span id="fileNameLabel">ドロップ可</span>
         <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
-        <span>NC読込</span>
-      </label>
+      </div>
 
       <div class="transport">
         <button id="playBtn" title="再生">▶</button>
@@ -38,6 +46,7 @@
       <div class="now-line">
         <span>現在行</span>
         <strong id="currentLineLabel">----</strong>
+        <em id="blockCountLabel">0 blocks / 0 lines</em>
       </div>
     </header>
 
@@ -95,6 +104,7 @@
         <div class="timeline-wrap">
           <input id="timeline" type="range" min="0" max="0" value="0" />
           <span id="timeLabel">00:00 / 00:00</span>
+          <span id="bottomCountLabel">0 motion blocks / 0 NC lines</span>
         </div>
         <div class="nc-area">
           <textarea id="ncInput" spellcheck="false" placeholder="SHINX専用ポストから出力したNCコードを貼り付け"></textarea>

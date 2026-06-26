@@ -29,7 +29,7 @@ body {
 .topbar {
   height: 70px;
   display: grid;
-  grid-template-columns: minmax(260px, 1fr) auto auto 190px;
+  grid-template-columns: minmax(260px, 1fr) 190px auto 210px;
   align-items: center;
   gap: 14px;
   padding: 10px 16px;
@@ -42,7 +42,7 @@ h1 { font-size: 24px; line-height: 1.1; }
 h2 { font-size: 14px; }
 p { color: var(--muted); margin-top: 3px; }
 
-button, select, .file-drop {
+button, select {
   height: 36px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -63,15 +63,32 @@ button:hover, button.active {
 }
 
 .file-drop {
-  position: relative;
-  display: inline-flex;
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
   align-items: center;
-  justify-content: center;
-  min-width: 112px;
-  padding: 0 12px;
+  gap: 7px;
+  min-width: 0;
+  height: 42px;
+  padding: 4px;
+  border: 1px dashed var(--line);
+  border-radius: 7px;
   border-style: dashed;
+  color: var(--muted);
+  background: #fbfcfd;
+}
+
+.file-drop button {
+  height: 32px;
   color: var(--accent);
+}
+
+.file-drop span {
+  min-width: 0;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .file-drop.drag {
@@ -80,10 +97,7 @@ button:hover, button.active {
 }
 
 .file-drop input {
-  position: absolute;
-  inset: 0;
-  opacity: 0;
-  cursor: pointer;
+  display: none;
 }
 
 .transport {
@@ -112,6 +126,12 @@ button:hover, button.active {
 
 .now-line strong {
   font: 700 18px Consolas, "Courier New", monospace;
+}
+
+.now-line em {
+  color: var(--muted);
+  font-style: normal;
+  font: 700 11px Consolas, "Courier New", monospace;
 }
 
 .motion-layout {
@@ -318,7 +338,7 @@ canvas {
 
 .timeline-wrap {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
+  grid-template-columns: minmax(0, 1fr) 120px 190px;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
@@ -330,6 +350,12 @@ canvas {
 }
 
 #timeLabel {
+  color: var(--muted);
+  font: 700 12px Consolas, "Courier New", monospace;
+  text-align: right;
+}
+
+#bottomCountLabel {
   color: var(--muted);
   font: 700 12px Consolas, "Courier New", monospace;
   text-align: right;
@@ -358,7 +384,7 @@ textarea {
 
 .nc-row {
   display: grid;
-  grid-template-columns: 74px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   gap: 8px;
   padding: 2px 9px;
   border-bottom: 1px solid #edf1f4;
@@ -378,6 +404,11 @@ textarea {
 .nc-row .line {
   color: var(--muted);
   text-align: right;
+}
+
+.nc-row .line b {
+  display: block;
+  color: var(--accent);
 }
 
 .nc-row.active .line::before {
