@@ -53,7 +53,8 @@ G90 G00 X{first_cut_x} Y{first_cut_y}
 ```
 
 `first_cut_x` / `first_cut_y` はFusionの各工程の初期位置から取得します。
-以降のZ移動はポスト側の固定値ではなく、FusionのツールパスZを工程初期Z基準に変換して出力します。
+以降のZ移動はポスト側の固定値ではなく、FusionのツールパスZを材料上面 `materialTopZ` 基準に変換して出力します。
+`materialTopZ` をFusionのstock/workpieceから取得できない場合、ポストはZ出力前に停止します。
 
 ## ポストプロパティ
 
@@ -62,7 +63,9 @@ G90 G00 X{first_cut_x} Y{first_cut_y}
 - `machineOriginY`: 機械側加工原点Y。初期値 `-2610.910`。
 - `safeZ`: G92後の安全Z。初期値 `60.0`。
 - `spindleSpeedOverride`: 0ならFusion工程のS値を使用。0以外なら固定S値。
-- `maxDepth`: Fusion Z変換後の深さ警告しきい値。初期値 `31.0`。
+- `maxDepth`: 材料上面からの最大加工深さ。`Z-31` より深い値はエラーで停止。初期値 `31.0`。
+- `useManualStockTopZ`: Fusionから材料上面を取得できない場合に手動値を使う。
+- `manualStockTopZ`: 材料上面のFusion座標Z。`useManualStockTopZ` が `true` の時だけ使用。
 - `debugZLog`: Z変換調査用コメントを出力する。
 - `useToolMapping`: Fusion工具番号をSHINX工具番号へ変換する。
 - `tool1Mapped` ... `tool7Mapped`: 工具番号マッピング。

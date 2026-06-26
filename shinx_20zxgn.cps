@@ -21,7 +21,7 @@ extension = "nc";
 programNameIsInteger = false;
 setCodePage("ascii");
 
-var SHINX_POST_VERSION = "2026-06-26-zfusion1";
+var SHINX_POST_VERSION = "2026-06-26-zstocktop1";
 
 capabilities = CAPABILITY_MILLING;
 tolerance = spatial(0.002, MM);
@@ -76,10 +76,26 @@ properties = {
   },
   maxDepth: {
     title: "Max depth",
-    description: "Warning threshold for Fusion Z depth after section initial Z is treated as zero.",
+    description: "Maximum allowed cutting depth from material top. Z deeper than -maxDepth stops the post.",
     group: "shinx",
     type: "number",
     value: 31.0,
+    scope: "post"
+  },
+  useManualStockTopZ: {
+    title: "Use manual stock top Z",
+    description: "Use manualStockTopZ when Fusion stock/workpiece top cannot be read reliably.",
+    group: "shinx",
+    type: "boolean",
+    value: false,
+    scope: "post"
+  },
+  manualStockTopZ: {
+    title: "Manual stock top Z",
+    description: "Fusion coordinate Z value for stock/workpiece top. Used only when useManualStockTopZ is true.",
+    group: "shinx",
+    type: "number",
+    value: 0.0,
     scope: "post"
   },
   debugZLog: {
@@ -122,12 +138,12 @@ var currentFeed = undefined;
 var currentMode = 90;
 var pendingSectionInitial = undefined;
 var pendingInitialSkips = 0;
-var sectionZOrigin = undefined;
+var materialTopZ = undefined;
+var materialTopZSource = undefined;
 var originWasResetAfterToolChange = false;
 var firstOutputDone = false;
 var spindleIsOn = false;
 var pendingRadiusCompensation = -1;
-var depthWarningIssued = false;
 
 function pad(value, width) {
   var text = String(value);
@@ -201,14 +217,100 @@ function getWorkOffsetForDebug() {
   return "NA";
 }
 
+function extractTopZ(candidate) {
+  if (!candidate) {
+    return undefined;
+  }
+  try {
+    if (candidate.upper && candidate.upper.z !== undefined) {
+      return candidate.upper.z;
+    }
+    if (candidate.maximum && candidate.maximum.z !== undefined) {
+      return candidate.maximum.z;
+    }
+    if (candidate.max && candidate.max.z !== undefined) {
+      return candidate.max.z;
+    }
+    if (candidate.high && candidate.high.z !== undefined) {
+      return candidate.high.z;
+    }
+    if (typeof candidate.getUpper == "function") {
+      var upper = candidate.getUpper();
+      if (upper && upper.z !== undefined) {
+        return upper.z;
+      }
+    }
+    if (typeof candidate.getMaximum == "function") {
+      var maximum = candidate.getMaximum();
+      if (maximum && maximum.z !== undefined) {
+        return maximum.z;
+      }
+    }
+  } catch (e) {
+  }
+  return undefined;
+}
+
+function resolveMaterialTopZ() {
+  if (materialTopZ !== undefined) {
+    return materialTopZ;
+  }
+  if (getProperty("useManualStockTopZ")) {
+    materialTopZ = getProperty("manualStockTopZ");
+    materialTopZSource = "manualStockTopZ";
+    return materialTopZ;
+  }
+  try {
+    if (typeof getWorkpiece == "function") {
+      var workpieceTop = extractTopZ(getWorkpiece());
+      if (workpieceTop !== undefined) {
+        materialTopZ = workpieceTop;
+        materialTopZSource = "getWorkpiece";
+        return materialTopZ;
+      }
+    }
+  } catch (e1) {
+  }
+  try {
+    if (currentSection && typeof currentSection.getWorkpiece == "function") {
+      var sectionWorkpieceTop = extractTopZ(currentSection.getWorkpiece());
+      if (sectionWorkpieceTop !== undefined) {
+        materialTopZ = sectionWorkpieceTop;
+        materialTopZSource = "currentSection.getWorkpiece";
+        return materialTopZ;
+      }
+    }
+  } catch (e2) {
+  }
+  try {
+    if (currentSection && typeof currentSection.getSetup == "function") {
+      var setup = currentSection.getSetup();
+      var setupTop = extractTopZ(setup && (setup.stock || setup.workpiece || setup));
+      if (setupTop !== undefined) {
+        materialTopZ = setupTop;
+        materialTopZSource = "currentSection.getSetup";
+        return materialTopZ;
+      }
+    }
+  } catch (e3) {
+  }
+  return undefined;
+}
+
 function transformFusionZ(z) {
   if (z === undefined) {
     return undefined;
   }
-  if (sectionZOrigin === undefined) {
-    return z;
+  var topZ = resolveMaterialTopZ();
+  if (topZ === undefined) {
+    error("Cannot determine materialTopZ from Fusion stock/workpiece. Enable useManualStockTopZ and set manualStockTopZ. No Fusion Z output was emitted.");
+    return undefined;
   }
-  return z - sectionZOrigin;
+  var outputZ = z - topZ;
+  if (outputZ < -getProperty("maxDepth") - 0.001) {
+    error("Fusion Z output " + fmt(outputZ) + " is deeper than allowed maxDepth -" + fmt(getProperty("maxDepth")) + ". Post stopped before emitting unsafe Z.");
+  }
+  return outputZ;
 }
 
 function writeDebugZ(source, rawZ, outputZ, mode) {
@@ -224,6 +326,8 @@ function writeDebugZ(source, rawZ, outputZ, mode) {
     " getCurrentPosition.z=" + debugValue(getCurrentPositionZForDebug()) +
     " sectionInitial.z=" + debugValue(getSectionInitialZForDebug()) +
     " workOffset=" + debugRawValue(getWorkOffsetForDebug()) +
+    " materialTopZ=" + debugValue(materialTopZ) +
+    " materialTopZSource=" + debugRawValue(materialTopZSource) +
     " maxDepth=" + debugRawValue(getProperty("maxDepth")) +
     " materialThickness=NA cutStartDepth=NA");
 }
@@ -292,9 +396,11 @@ function writeCutStart(initial) {
   if (!originWasResetAfterToolChange) {
     error("Origin reset sequence is missing before machining start.");
   }
-  sectionZOrigin = initial.z;
+  if (resolveMaterialTopZ() === undefined) {
+    error("Cannot determine materialTopZ from Fusion stock/workpiece before machining start. Enable useManualStockTopZ and set manualStockTopZ.");
+  }
   writeShinxBlock("G90 G00", "X" + fmt(initial.x), "Y" + fmt(initial.y));
-  writeDebugZ("writeCutStart-fusionZOrigin", initial.z, 0, "G90");
+  writeDebugZ("writeCutStart-materialTop", initial.z, materialTopZ, "G90");
   currentMode = 90;
   currentPosition.x = initial.x;
   currentPosition.y = initial.y;
@@ -386,10 +492,6 @@ function writeMotion(gCode, x, y, z, r, feed, source) {
     currentPosition.y = y;
   }
   if (outputZ !== undefined) {
-    if (outputZ < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
-      warning("Fusion Z depth " + fmt(outputZ) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
-      depthWarningIssued = true;
-    }
     if (!sameCoordinate(outputZ, currentPosition.z)) {
       words.push("Z" + fmt(outputZ));
     }
@@ -437,10 +539,6 @@ function writeLinearWithRadiusCompensation(x, y, z, feed, source) {
     currentPosition.y = y;
   }
   if (outputZ !== undefined) {
-    if (outputZ < -getProperty("maxDepth") - 0.001 && !depthWarningIssued) {
-      warning("Fusion Z depth " + fmt(outputZ) + " is deeper than maxDepth " + fmt(getProperty("maxDepth")) + ". Verify setup before machining.");
-      depthWarningIssued = true;
-    }
     if (!sameCoordinate(outputZ, currentPosition.z)) {
       words.push("Z" + fmt(outputZ));
     }
