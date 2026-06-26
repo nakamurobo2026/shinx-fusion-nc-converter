@@ -1,6 +1,3 @@
-import * as THREE from "https://unpkg.com/three@0.165.0/build/three.module.js";
-import { OrbitControls } from "https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js";
-
 const $ = (id) => document.getElementById(id);
 const fmt = (value, digits = 3) => value === null || value === undefined || Number.isNaN(value) ? "-" : Number(value).toFixed(digits);
 
@@ -17,6 +14,9 @@ let scene;
 let camera;
 let renderer;
 let controls;
+let THREE;
+let OrbitControls;
+let threeReady = false;
 let stockMesh;
 let rangeBox;
 let toolMesh;
@@ -299,7 +299,11 @@ function analyzeNc(text) {
   return { rows, motionRows, segments, toolEvents, tools: Array.from(toolMap.values()), safety, inferred };
 }
 
-function initThree() {
+async function initThree() {
+  const threeModule = await import("three");
+  const controlsModule = await import("https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js");
+  THREE = threeModule;
+  OrbitControls = controlsModule.OrbitControls;
   const host = $("threeViewport");
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101820);
@@ -322,6 +326,8 @@ function initThree() {
   scene.add(pathGroup, markerGroup);
   toolMesh = createToolMesh();
   scene.add(toolMesh);
+  threeReady = true;
+  if (state.analysis.segments.length) rebuildScene();
   animate();
 }
 
@@ -362,6 +368,7 @@ function lineObject(points, color, dashed = false) {
 }
 
 function rebuildScene() {
+  if (!threeReady || !scene) return;
   const a = state.analysis;
   if (stockMesh) {
     scene.remove(stockMesh);
@@ -479,7 +486,7 @@ function updateToolAtIndex(index) {
   }
   state.index = Math.max(0, Math.min(index, state.analysis.segments.length - 1));
   const pos = currentPosition();
-  toolMesh.position.set(pos.x, pos.y, pos.z);
+  if (toolMesh) toolMesh.position.set(pos.x, pos.y, pos.z);
   updateHud(pos);
   renderNcList();
   drawSection();
@@ -773,12 +780,14 @@ function bindEvents() {
     event.preventDefault();
     if (name === "drop") readNcFile(event.dataTransfer.files?.[0]);
     drop.classList.remove("drag");
-  });
+  }));
   window.addEventListener("resize", () => {
-    const host = $("threeViewport");
-    camera.aspect = host.clientWidth / host.clientHeight;
-    camera.updateProjectionMatrix();
-    renderer.setSize(host.clientWidth, host.clientHeight);
+    if (threeReady && camera && renderer) {
+      const host = $("threeViewport");
+      camera.aspect = host.clientWidth / host.clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(host.clientWidth, host.clientHeight);
+    }
     drawSection();
     drawXY();
   });
@@ -788,10 +797,13 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[ch]);
 }
 
-initThree();
 bindEvents();
 renderSummary();
 renderSafety();
 updateCountLabels();
 drawSection();
 drawXY();
+initThree().catch((error) => {
+  console.warn("3D viewer failed to initialize.", error);
+  $("viewerStatus").textContent = "3D読込失敗 / NC読込は使用可";
+});
