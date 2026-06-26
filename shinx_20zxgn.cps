@@ -149,7 +149,6 @@ var yOutput = undefined;
 var zOutput = undefined;
 var materialThickness = undefined;
 var materialThicknessSource = undefined;
-var lastFusionZ = 0;
 var shinxZAtMaterialTop = false;
 
 function pad(value, width) {
@@ -242,6 +241,13 @@ function writeRelativeZMotion(code, deltaZ, feed) {
   if (zOutput !== undefined) {
     zOutput += deltaZ;
   }
+}
+
+function transformFusionZToShinxZ(z) {
+  if (z === undefined || !shinxZAtMaterialTop) {
+    return z;
+  }
+  return resolveMaterialThickness() + z;
 }
 
 function planeWord(code) {
@@ -505,7 +511,6 @@ function writeFirstXYMove() {
     forceXYZ(initial.x, initial.y, approachZ);
     currentDistanceMode = "G90";
     writeRelativeZMotion("G01", -getProperty("approachClearance"), getProperty("plungeFeed"));
-    lastFusionZ = 0;
     shinxZAtMaterialTop = true;
     return;
   }
@@ -516,11 +521,7 @@ function writeFirstXYMove() {
 
 function writeMotion(code, x, y, z, feed) {
   if (z !== undefined && shinxZAtMaterialTop) {
-    if (x !== undefined || y !== undefined) {
-      writeAbsoluteMotion(code, x, y, undefined, feed);
-    }
-    writeRelativeZMotion(code, z - lastFusionZ, feed);
-    lastFusionZ = z;
+    writeAbsoluteMotion(code, x, y, transformFusionZToShinxZ(z), feed);
     return;
   }
   writeAbsoluteMotion(code, x, y, z, feed);
@@ -603,17 +604,11 @@ function onCircular(clockwise, cx, cy, cz, x, y, z, feed) {
     motionWord(clockwise ? "G02" : "G03"),
     axisWord("X", x),
     axisWord("Y", y),
+    axisWord("Z", transformFusionZToShinxZ(z)),
     "R" + fmt(getArcRadius()),
     feedWord(feed)
   ];
-  if (!(z !== undefined && shinxZAtMaterialTop)) {
-    words.splice(5, 0, axisWord("Z", z));
-  }
   writeShinxBlock.apply(null, words);
-  if (z !== undefined && shinxZAtMaterialTop) {
-    writeRelativeZMotion("G01", z - lastFusionZ, feed);
-    lastFusionZ = z;
-  }
 }
 
 function onRadiusCompensation() {
