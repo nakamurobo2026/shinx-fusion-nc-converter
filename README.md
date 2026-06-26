@@ -38,6 +38,12 @@ python -m pip install -r requirements.txt
 python -m uvicorn app:app --host 127.0.0.1 --port 8000
 ```
 
+## Fusion 360専用ポスト
+
+Fusion 360からSHINX 20ZXGN用NCコードを直接出す専用ポストは `shinx_20zxgn.cps` です。
+
+導入方法とプロパティ説明は `SHINX_20ZXGN_POST_README.md` を参照してください。
+
 ## GitHub Pages
 
 リポジトリ設定で Pages の Source を `Deploy from a branch`、Branch を `main`、Folder を `/docs` にすると公開できます。
