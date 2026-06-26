@@ -3,72 +3,109 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SHINX Fusion NC Converter</title>
+    <title>SHINX NC Viewer</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <header class="topbar">
       <div>
-        <h1>SHINX Fusion NC Converter</h1>
-        <p>Fusion 360 CAD/CAM Gコードを SHINX 20ZXGN 用NCコードへ変換</p>
+        <h1>SHINX NC Viewer</h1>
+        <p>Fusion SHINX専用ポスト出力NCの確認ビューア</p>
       </div>
       <div class="actions">
         <a class="download-link" href="https://raw.githubusercontent.com/nakamurobo2026/shinx-fusion-nc-converter/main/shinx_20zxgn.cps?cachebust=8df98be" download="shinx_20zxgn.cps">.cps DL</a>
-        <button id="convertBtn">変換</button>
-        <button id="saveNcBtn" disabled>.nc保存</button>
-        <button id="saveTxtBtn" disabled>.txt保存</button>
+        <button id="analyzeBtn">解析</button>
+        <button id="jsonBtn" disabled>JSON</button>
+        <button id="coordCsvBtn" disabled>座標CSV</button>
+        <button id="checkCsvBtn" disabled>チェックCSV</button>
       </div>
     </header>
 
-    <main class="layout">
-      <aside class="settings">
+    <main class="viewer-layout">
+      <aside class="side-panel">
         <section>
-          <h2>加工設定</h2>
-          <label>加工面<select id="faceSelect"></select></label>
+          <h2>設定</h2>
+          <label>加工面<select id="machiningFace"></select></label>
           <div class="grid2">
-            <label>機械原点 X<input id="machine_origin_x" type="number" step="0.001" /></label>
-            <label>機械原点 Y<input id="machine_origin_y" type="number" step="0.001" /></label>
-            <label>安全Z<input id="safe_z" type="number" step="0.001" /></label>
-            <label>接近Z<input id="approach_z" type="number" step="0.001" /></label>
-            <label>主軸回転数<input id="spindle_speed" type="number" step="1" /></label>
-            <label>切込送り<input id="plunge_feed" type="number" step="1" /></label>
-            <label>初期切込<input id="cut_start_depth" type="number" step="0.001" /></label>
-            <label>最大深さ<input id="max_cut_depth" type="number" step="0.001" /></label>
-            <label>逃げ幅<input id="clearance" type="number" step="0.001" /></label>
-            <label>材料 X<input id="material_size_x" type="number" step="0.001" /></label>
-            <label>材料 Y<input id="material_size_y" type="number" step="0.001" /></label>
-            <label>材料厚<input id="material_thickness" type="number" step="0.001" /></label>
+            <label>材料厚<input id="materialThickness" type="number" step="0.001" /></label>
+            <label>安全余裕<input id="safeClearance" type="number" step="0.001" /></label>
+            <label>接近余裕<input id="approachClearance" type="number" step="0.001" /></label>
+            <label>許容突抜<input id="allowOvercut" type="number" step="0.001" /></label>
+            <label>材料X<input id="materialX" type="number" step="0.001" /></label>
+            <label>材料Y<input id="materialY" type="number" step="0.001" /></label>
+            <label>機械原点X<input id="machineOriginX" type="number" step="0.001" /></label>
+            <label>機械原点Y<input id="machineOriginY" type="number" step="0.001" /></label>
           </div>
         </section>
 
         <section>
-          <h2>工具マッピング</h2>
-          <div id="toolMapping" class="tool-grid"></div>
+          <h2>Z基準</h2>
+          <div id="zSummary" class="metric-list"></div>
+        </section>
+
+        <section>
+          <h2>安全チェック</h2>
+          <div id="checkSummary" class="check-summary"></div>
+          <div id="checkList" class="check-list"></div>
+        </section>
+
+        <section>
+          <h2>工具</h2>
+          <div id="toolList" class="tool-list"></div>
         </section>
       </aside>
 
-      <section class="workspace">
+      <section class="code-panel">
         <div id="dropZone" class="dropzone">
-          <strong>Gコードをドロップ</strong>
-          <span>.nc / .txt を読み込み、または左側へ貼り付け</span>
+          <strong>SHINX NCをドロップ</strong>
+          <span>.nc / .txt を読み込み、または下へ貼り付け</span>
           <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
         </div>
+        <textarea id="ncInput" spellcheck="false" placeholder="FusionのSHINX専用ポストから出力したNCコードを貼り付け"></textarea>
+      </section>
 
-        <div class="compare">
-          <label>
-            <span>変換前</span>
-            <textarea id="inputCode" spellcheck="false"></textarea>
-          </label>
-          <label>
-            <span>変換後</span>
-            <textarea id="outputCode" spellcheck="false" readonly></textarea>
-          </label>
+      <section class="table-panel">
+        <div class="panel-head">
+          <h2>座標一覧</h2>
+          <span id="lineCount">0 行</span>
         </div>
+        <div class="table-wrap">
+          <table id="coordTable">
+            <thead>
+              <tr>
+                <th>行</th>
+                <th>元NC行</th>
+                <th>G</th>
+                <th>Mode</th>
+                <th>X</th>
+                <th>Y</th>
+                <th>Z</th>
+                <th>F</th>
+                <th>S</th>
+                <th>T</th>
+                <th>工具</th>
+                <th>警告</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
 
-        <section class="log-panel">
-          <h2>変換ログ</h2>
-          <div id="logOutput" class="log"></div>
-        </section>
+      <section class="preview-panel">
+        <div class="panel-head">
+          <h2>2D XYプレビュー</h2>
+          <span id="rangeSummary"></span>
+        </div>
+        <canvas id="xyCanvas" width="900" height="420"></canvas>
+      </section>
+
+      <section class="z-panel">
+        <div class="panel-head">
+          <h2>Zビュー</h2>
+          <span id="zRangeSummary"></span>
+        </div>
+        <canvas id="zCanvas" width="900" height="220"></canvas>
       </section>
     </main>
 

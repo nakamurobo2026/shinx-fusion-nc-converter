@@ -1,482 +1,671 @@
 const DEFAULT_CONFIG = {
-  machine_origin_x: -1303.52,
-  machine_origin_y: -2610.91,
-  safe_z: 60.0,
-  approach_z: 5.0,
-  spindle_speed: 5000,
-  plunge_feed: 1500,
-  cut_start_depth: 31.0,
-  max_cut_depth: 31.0,
-  material_size_x: 100.0,
-  material_size_y: 100.0,
-  material_thickness: 30.0,
-  clearance: 30.0,
-  stroke: {
-    min_x: -3000.0,
-    max_x: 3000.0,
-    min_y: -3500.0,
-    max_y: 500.0,
-    min_z: -300.0,
-    max_z: 300.0,
-  },
-  tool_mapping: { 1: 9, 2: 10, 3: 11, 4: 12, 5: 13, 6: 14, 7: 15 },
+  materialThickness: 30,
+  safeClearance: 20,
+  approachClearance: 5,
+  allowOvercut: 1,
+  materialX: 300,
+  materialY: 300,
+  machineOriginX: -1303.52,
+  machineOriginY: -2610.91,
+  machiningFace: 8,
   faces: {
-    1: { name: "加工面1", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    2: { name: "加工面2", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    3: { name: "加工面3", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    4: { name: "加工面4", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    5: { name: "加工面5", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    6: { name: "加工面6", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    7: { name: "加工面7", machine_origin_x: 0.0, machine_origin_y: 0.0 },
-    8: { name: "加工面8 左下", machine_origin_x: -1303.52, machine_origin_y: -2610.91 },
+    1: { name: "加工面1", machineOriginX: 0, machineOriginY: 0 },
+    2: { name: "加工面2", machineOriginX: 0, machineOriginY: 0 },
+    3: { name: "加工面3", machineOriginX: 0, machineOriginY: 0 },
+    4: { name: "加工面4", machineOriginX: 0, machineOriginY: 0 },
+    5: { name: "加工面5", machineOriginX: 0, machineOriginY: 0 },
+    6: { name: "加工面6", machineOriginX: 0, machineOriginY: 0 },
+    7: { name: "加工面7", machineOriginX: 0, machineOriginY: 0 },
+    8: { name: "加工面8", machineOriginX: -1303.52, machineOriginY: -2610.91 },
   },
 };
 
-const fields = [
-  "machine_origin_x",
-  "machine_origin_y",
-  "safe_z",
-  "approach_z",
-  "spindle_speed",
-  "plunge_feed",
-  "cut_start_depth",
-  "max_cut_depth",
-  "material_size_x",
-  "material_size_y",
-  "material_thickness",
-  "clearance",
-];
-
-const allowedG = new Set([0, 1, 2, 3, 17, 18, 19, 40, 41, 42, 90, 91]);
-const hazardousM = new Set([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 23, 30, 92, 95]);
+const STORAGE_KEY = "shinx_nc_viewer_config";
+const fields = ["materialThickness", "safeClearance", "approachClearance", "allowOvercut", "materialX", "materialY", "machineOriginX", "machineOriginY"];
 const $ = (id) => document.getElementById(id);
-let currentConfig = loadConfig();
-let convertedText = "";
 
-function deepMerge(base, override) {
-  const merged = structuredClone(base);
-  Object.entries(override || {}).forEach(([key, value]) => {
-    if (value && typeof value === "object" && !Array.isArray(value) && typeof merged[key] === "object") {
-      merged[key] = deepMerge(merged[key], value);
-    } else {
-      merged[key] = value;
-    }
-  });
-  return merged;
-}
+let config = loadConfig();
+let analysis = null;
 
 function loadConfig() {
   try {
-    return deepMerge(DEFAULT_CONFIG, JSON.parse(localStorage.getItem("shinx_converter_config") || "{}"));
+    return { ...structuredClone(DEFAULT_CONFIG), ...JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}") };
   } catch {
     return structuredClone(DEFAULT_CONFIG);
   }
 }
 
 function saveConfig() {
-  currentConfig = collectConfig();
-  localStorage.setItem("shinx_converter_config", JSON.stringify(currentConfig));
+  config = collectConfig();
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
 }
 
 function renderConfig() {
   fields.forEach((name) => {
-    $(name).value = currentConfig[name] ?? "";
+    $(name).value = config[name] ?? "";
   });
-  const faceSelect = $("faceSelect");
+  const faceSelect = $("machiningFace");
   faceSelect.innerHTML = "";
-  Object.entries(currentConfig.faces || {}).forEach(([key, face]) => {
+  Object.entries(config.faces || DEFAULT_CONFIG.faces).forEach(([key, face]) => {
     const option = document.createElement("option");
     option.value = key;
     option.textContent = `${key}: ${face.name || "加工面" + key}`;
     faceSelect.appendChild(option);
   });
-  faceSelect.value = "8";
-
-  const toolMapping = $("toolMapping");
-  toolMapping.innerHTML = "";
-  for (let i = 1; i <= 7; i += 1) {
-    const row = document.createElement("label");
-    row.className = "tool-row";
-    row.innerHTML = `<span>T${i}</span><input id="tool_${i}" type="number" step="1" value="${currentConfig.tool_mapping?.[i] ?? ""}" />`;
-    toolMapping.appendChild(row);
-  }
+  faceSelect.value = String(config.machiningFace || 8);
+  renderZSummary();
 }
 
 function collectConfig() {
-  const cfg = structuredClone(currentConfig || DEFAULT_CONFIG);
+  const next = { ...config };
   fields.forEach((name) => {
-    cfg[name] = Number($(name).value);
+    next[name] = Number($(name).value);
   });
-  cfg.tool_mapping = {};
-  for (let i = 1; i <= 7; i += 1) {
-    cfg.tool_mapping[String(i)] = Number($(`tool_${i}`).value);
-  }
-  return cfg;
+  next.machiningFace = Number($("machiningFace").value);
+  return next;
 }
 
-function stripComments(line) {
+function zValues() {
+  return {
+    materialTopZ: config.materialThickness,
+    safeZ: config.materialThickness + config.safeClearance,
+    approachZ: config.materialThickness + config.approachClearance,
+    materialBottomZ: 0,
+    minAllowedZ: -config.allowOvercut,
+  };
+}
+
+function fmt(value, digits = 3) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "-";
+  return Number(value).toFixed(digits);
+}
+
+function cleanLine(line) {
   return line.replace(/\([^)]*\)/g, "").replace(/;.*$/g, "").trim();
 }
 
-function normalizeLine(line) {
-  return stripComments(line)
-    .toUpperCase()
-    .replace(/^(?:O\d+\s+)?N\d+\s*/i, "")
-    .replace(/\s+/g, " ")
-    .replace(/([A-Z])\s+([-+]?\d)/g, "$1$2")
-    .trim();
-}
-
-function getWords(line) {
-  const found = [];
+function wordsFromLine(line) {
+  const words = [];
   const re = /([A-Z])\s*([-+]?\d+(?:\.\d*)?|\.\d+)/gi;
   let match = re.exec(line);
   while (match) {
-    found.push([match[1].toUpperCase(), Number(match[2])]);
+    words.push({ letter: match[1].toUpperCase(), value: Number(match[2]) });
     match = re.exec(line);
   }
-  return found;
+  return words;
 }
 
-function ijkToRadius(lineWords, plane) {
-  const values = Object.fromEntries(lineWords);
-  if (values.R !== undefined) return null;
-  const planeMap = {
-    G17: { axes: ["X", "Y"], offsets: ["I", "J"] },
-    G18: { axes: ["X", "Z"], offsets: ["I", "K"] },
-    G19: { axes: ["Y", "Z"], offsets: ["J", "K"] },
+function normalizeMotion(value) {
+  return `G${String(Math.trunc(value)).padStart(2, "0")}`;
+}
+
+function isMotion(g) {
+  return ["G00", "G01", "G02", "G03"].includes(g);
+}
+
+function distance(a, b) {
+  return Math.hypot((b.x ?? a.x) - a.x, (b.y ?? a.y) - a.y, (b.z ?? a.z) - a.z);
+}
+
+function analyzeNc(text, cfg) {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const programUsesG92 = lines.some((line) => /G\s*92(?!\d)/i.test(line));
+  const rows = [];
+  const checks = [];
+  const tools = new Map();
+  const toolEvents = [];
+  const segments = [];
+  const zTrace = [];
+  const modeHistory = [];
+  const state = {
+    x: 0,
+    y: 0,
+    z: 0,
+    f: null,
+    s: null,
+    t: null,
+    tool: null,
+    motion: null,
+    mode: "G90",
+    plane: "G17",
+    hasG92: false,
+    hasM21: false,
+    hasP9000: false,
+    hasP9900: false,
+    hasG218: false,
+    hasG219: false,
+    hasM92: false,
+    hasM95: false,
+    spindleOn: false,
+    toolLoaded: false,
   };
-  const map = planeMap[plane] || planeMap.G17;
-  if (!map.axes.some((axis) => values[axis] !== undefined)) return null;
-  if (!map.offsets.some((offset) => values[offset] !== undefined)) return null;
-  return Math.hypot(...map.offsets.map((offset) => values[offset] || 0));
-}
+  const stats = {
+    minX: null, maxX: null, minY: null, maxY: null, minZ: null, maxZ: null,
+    zDown: 0, zUp: 0, g91ZTotal: 0,
+    firstMove: null,
+    g92: null,
+    estimatedMinutes: 0,
+  };
 
-function parseProgram(text) {
-  const cleanLines = [];
-  const bodyLines = [];
-  const removedLines = [];
-  const tools = [];
-  const spindleSpeeds = [];
-  const ranges = { min_x: null, max_x: null, min_y: null, max_y: null, min_z: null, max_z: null };
-  const modal = { distance: null, motion: null };
-  let currentPlane = "G17";
-  let convertedArcCount = 0;
-  let firstCut = null;
+  function addCheck(severity, line, message) {
+    checks.push({ severity, line, message });
+  }
 
-  text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").forEach((raw) => {
-    const clean = normalizeLine(raw);
-    if (!clean) return;
-    cleanLines.push(clean);
-    const lineWords = getWords(clean);
+  function updateRange(pos) {
+    stats.minX = stats.minX === null ? pos.x : Math.min(stats.minX, pos.x);
+    stats.maxX = stats.maxX === null ? pos.x : Math.max(stats.maxX, pos.x);
+    stats.minY = stats.minY === null ? pos.y : Math.min(stats.minY, pos.y);
+    stats.maxY = stats.maxY === null ? pos.y : Math.max(stats.maxY, pos.y);
+    stats.minZ = stats.minZ === null ? pos.z : Math.min(stats.minZ, pos.z);
+    stats.maxZ = stats.maxZ === null ? pos.z : Math.max(stats.maxZ, pos.z);
+  }
 
-    lineWords.forEach(([letter, value]) => {
-      if (letter === "T" && !tools.includes(Math.trunc(value))) tools.push(Math.trunc(value));
-      if (letter === "S" && value > 0) spindleSpeeds.push(Math.trunc(value));
-    });
-
-    if (lineWords.some(([letter, value]) => letter === "M" && hazardousM.has(Math.trunc(value)))) {
-      removedLines.push(clean);
-      return;
-    }
-    if (lineWords.some(([letter, value]) => letter === "G" && !allowedG.has(Math.trunc(value)))) {
-      removedLines.push(clean);
-      return;
-    }
-
-    let lineMotion = modal.motion;
-    const lineValues = Object.fromEntries(lineWords);
-    lineWords.forEach(([letter, value]) => {
-      if (letter !== "G") return;
-      const code = Math.trunc(value);
-      if ([2, 3].includes(code)) lineMotion = `G${String(code).padStart(2, "0")}`;
-      if ([17, 18, 19].includes(code)) currentPlane = `G${code}`;
-    });
-    const arcRadius = ["G02", "G03"].includes(lineMotion) ? ijkToRadius(lineWords, currentPlane) : null;
-
-    if (!firstCut && (lineValues.X !== undefined || lineValues.Y !== undefined)) {
-      firstCut = { x: lineValues.X ?? 0, y: lineValues.Y ?? 0 };
-      ["X", "Y"].forEach((axisLetter) => {
-        if (lineValues[axisLetter] === undefined) return;
-        const axis = axisLetter.toLowerCase();
-        const minKey = `min_${axis}`;
-        const maxKey = `max_${axis}`;
-        ranges[minKey] = ranges[minKey] === null ? lineValues[axisLetter] : Math.min(ranges[minKey], lineValues[axisLetter]);
-        ranges[maxKey] = ranges[maxKey] === null ? lineValues[axisLetter] : Math.max(ranges[maxKey], lineValues[axisLetter]);
+  function currentTool() {
+    const key = state.tool || state.t || "未取得";
+    if (!tools.has(key)) {
+      tools.set(key, {
+        tool: key,
+        p9000Line: null,
+        p9900Line: null,
+        spindle: null,
+        minX: null, maxX: null, minY: null, maxY: null, minZ: null, maxZ: null,
+        estimatedMinutes: 0,
+        warnings: 0,
       });
-      if (lineMotion === null || lineMotion === "G00") return;
     }
+    return tools.get(key);
+  }
 
-    const kept = [];
-    let insertedRadius = false;
-    lineWords.forEach(([letter, value]) => {
+  function updateToolRange(toolInfo, pos) {
+    toolInfo.minX = toolInfo.minX === null ? pos.x : Math.min(toolInfo.minX, pos.x);
+    toolInfo.maxX = toolInfo.maxX === null ? pos.x : Math.max(toolInfo.maxX, pos.x);
+    toolInfo.minY = toolInfo.minY === null ? pos.y : Math.min(toolInfo.minY, pos.y);
+    toolInfo.maxY = toolInfo.maxY === null ? pos.y : Math.max(toolInfo.maxY, pos.y);
+    toolInfo.minZ = toolInfo.minZ === null ? pos.z : Math.min(toolInfo.minZ, pos.z);
+    toolInfo.maxZ = toolInfo.maxZ === null ? pos.z : Math.max(toolInfo.maxZ, pos.z);
+  }
+
+  lines.forEach((raw, index) => {
+    const lineNumber = index + 1;
+    const cleaned = cleanLine(raw).toUpperCase().replace(/\s+/g, " ").trim();
+    if (!cleaned || cleaned === "%") return;
+    const words = wordsFromLine(cleaned);
+    const before = { x: state.x, y: state.y, z: state.z };
+    const warnings = [];
+    let gCode = state.motion || "";
+    let hasMoveAxis = false;
+    let hasXY = false;
+    let hasZ = false;
+    let hasG92Line = false;
+    let isDwellLine = false;
+    let pCode = null;
+    let mCodes = [];
+    let oNumber = null;
+    let nNumber = null;
+
+    words.forEach(({ letter, value }) => {
+      if (letter === "O") oNumber = Math.trunc(value);
+      if (letter === "N") nNumber = Math.trunc(value);
+      if (letter === "P") pCode = Math.trunc(value);
+      if (letter === "M") mCodes.push(Math.trunc(value));
       if (letter === "G") {
         const code = Math.trunc(value);
-        if (!allowedG.has(code)) return;
-        kept.push(`G${String(code).padStart(2, "0")}`);
-        if ([0, 1, 2, 3].includes(code)) modal.motion = `G${String(code).padStart(2, "0")}`;
-        if ([90, 91].includes(code)) modal.distance = `G${code}`;
-      } else if (["X", "Y", "Z", "I", "J", "K", "R"].includes(letter)) {
-        if (arcRadius !== null && ["I", "J", "K"].includes(letter)) return;
-        kept.push(`${letter}${value.toFixed(3)}`);
-        const axis = letter.toLowerCase();
-        if (!["i", "j", "k", "r"].includes(axis)) {
-          const minKey = `min_${axis}`;
-          const maxKey = `max_${axis}`;
-          ranges[minKey] = ranges[minKey] === null ? value : Math.min(ranges[minKey], value);
-          ranges[maxKey] = ranges[maxKey] === null ? value : Math.max(ranges[maxKey], value);
+        if ([0, 1, 2, 3].includes(code)) {
+          state.motion = normalizeMotion(code);
+          gCode = state.motion;
+        } else if (code === 4) {
+          isDwellLine = true;
+          gCode = "G04";
+        } else if (code === 90 || code === 91) {
+          const nextMode = `G${code}`;
+          if (state.mode !== nextMode) {
+            modeHistory.push({ line: lineNumber, from: state.mode, to: nextMode });
+          }
+          state.mode = nextMode;
+        } else if ([17, 18, 19].includes(code)) {
+          state.plane = `G${code}`;
+        } else if (code === 92) {
+          state.hasG92 = true;
+          hasG92Line = true;
+        } else if (code === 218) {
+          state.hasG218 = true;
+        } else if (code === 219) {
+          state.hasG219 = true;
         }
-      } else if (letter === "F") {
-        if (arcRadius !== null && !insertedRadius) {
-          kept.push(`R${arcRadius.toFixed(3)}`);
-          insertedRadius = true;
-        }
-        kept.push(`F${formatNumber(value)}`);
-      } else if (letter === "S") {
-        kept.push(`S${Math.trunc(value)}`);
       }
     });
 
-    if (arcRadius !== null && !insertedRadius) {
-      kept.push(`R${arcRadius.toFixed(3)}`);
-      insertedRadius = true;
+    words.forEach(({ letter, value }) => {
+      if (letter === "F") state.f = value;
+      if (letter === "S") {
+        state.s = value;
+        if (value > 0) state.spindleOn = true;
+        if (value === 0) state.spindleOn = false;
+        currentTool().spindle = value > 0 ? value : currentTool().spindle;
+      }
+      if (letter === "T") {
+        state.t = Math.trunc(value);
+      }
+    });
+
+    if (mCodes.includes(21)) state.hasM21 = true;
+    if (mCodes.includes(23)) state.spindleOn = true;
+    if (mCodes.includes(23)) currentTool().spindle = state.s;
+    if (mCodes.includes(92)) state.hasM92 = true;
+    if (mCodes.includes(95)) state.hasM95 = true;
+    if (mCodes.includes(3)) state.spindleOn = true;
+    if (mCodes.includes(5)) state.spindleOn = false;
+
+    if (cleaned.includes("G65") && pCode === 9000) {
+      state.hasP9000 = true;
+      state.toolLoaded = true;
+      state.tool = state.t || state.tool;
+      currentTool().p9000Line = lineNumber;
+      toolEvents.push({ type: "P9000", line: lineNumber, x: state.x, y: state.y, tool: state.tool || state.t || "" });
     }
-    if (insertedRadius) convertedArcCount += 1;
-
-    if (kept.length && kept.some((item) => /^[GXYZRFS]/.test(item))) {
-      bodyLines.push(kept.join(" "));
-    } else {
-      removedLines.push(clean);
+    if (cleaned.includes("G65") && pCode === 9900) {
+      state.hasP9900 = true;
+      currentTool().p9900Line = lineNumber;
+      toolEvents.push({ type: "P9900", line: lineNumber, x: state.x, y: state.y, tool: state.tool || state.t || "" });
+      state.toolLoaded = false;
     }
-  });
 
-  return { cleanLines, bodyLines, removedLines, tools, spindleSpeeds, ranges, modal, convertedArcCount, firstCut: firstCut || { x: 0, y: 0 } };
-}
+    words.forEach(({ letter, value }) => {
+      if (!["X", "Y", "Z"].includes(letter)) return;
+      if (isDwellLine) return;
+      if (hasG92Line) {
+        state[letter.toLowerCase()] = value;
+        return;
+      }
+      hasMoveAxis = true;
+      if (letter === "X") hasXY = true;
+      if (letter === "Y") hasXY = true;
+      if (letter === "Z") hasZ = true;
+      const key = letter.toLowerCase();
+      if (state.mode === "G91") {
+        state[key] += value;
+        if (letter === "Z") {
+          stats.g91ZTotal += value;
+        }
+      } else {
+        state[key] = value;
+      }
+    });
 
-function formatNumber(value) {
-  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(4)));
-}
+    const after = { x: state.x, y: state.y, z: state.z };
+    if (hasG92Line) {
+      stats.g92 = { line: lineNumber, x: after.x, y: after.y, z: after.z };
+    }
+    const inWorkCoordinates = !programUsesG92 || state.hasG92;
+    if (hasMoveAxis && isMotion(gCode) && inWorkCoordinates) {
+      const isFirstWorkMove = !stats.firstMove;
+      if (isFirstWorkMove) stats.firstMove = { line: lineNumber, x: after.x, y: after.y, z: after.z };
+      if (!state.toolLoaded && ["G01", "G02", "G03"].includes(gCode)) warnings.push("工具取得前に加工");
+      if (!state.spindleOn && ["G01", "G02", "G03"].includes(gCode)) warnings.push("主軸ON前に加工");
+      if (!isFirstWorkMove && gCode === "G00" && hasXY && !hasZ && after.z < cfg.materialThickness + cfg.approachClearance - 0.001) {
+        warnings.push("低いZでG00 XY移動");
+      }
+      if (after.z < -cfg.allowOvercut) warnings.push("材料下面より深いZ");
+      if (hasZ) {
+        const dz = after.z - before.z;
+        if (dz < 0) stats.zDown += Math.abs(dz);
+        if (dz > 0) stats.zUp += dz;
+      }
+      const len = distance(before, after);
+      const feed = state.f || 0;
+      const minutes = feed > 0 && gCode !== "G00" ? len / feed : 0;
+      stats.estimatedMinutes += minutes;
+      const toolInfo = currentTool();
+      toolInfo.estimatedMinutes += minutes;
+      updateToolRange(toolInfo, after);
+      segments.push({
+        line: lineNumber,
+        type: gCode,
+        from: before,
+        to: after,
+        warning: warnings.length > 0,
+      });
+      updateRange(after);
+      zTrace.push({ line: lineNumber, z: after.z, warning: warnings.length > 0 });
+    }
 
-function fmt(value) {
-  return Number(value).toFixed(3);
-}
+    warnings.forEach((message) => {
+      addCheck(message.includes("深い") || message.includes("低いZ") ? "danger" : "warn", lineNumber, message);
+      currentTool().warnings += 1;
+    });
 
-function header(config, shinxTool, spindleSpeed) {
-  return [
-    "O0000 N000000 M06",
-    "O0000 N000001 M95",
-    "O0000 N000002 G53",
-    "O0000 N000003 G90 G00 Z 0.000",
-    "O0000 N000004 M92",
-    `O0000 N000005 T${shinxTool}`,
-    "O0000 N000006 G65 P9000 L1",
-    "O0000 N000007 M23",
-    "O0000 N000008 M03",
-    `O0000 N000009 S${Math.trunc(spindleSpeed)}`,
-    "O0000 N000010 G04 X1.0",
-    "",
-  ];
-}
-
-function originBlock(config, firstCut) {
-  return [
-    `O0000 N000012 G90 G00 X${fmt(config.machine_origin_x)} Y${fmt(config.machine_origin_y)}`,
-    "O0000 N000013 G92 X 0.000 Y 0.000",
-    "O0000 N000014 M21",
-    `O0000 N000015 G90 G00 Z ${fmt(config.safe_z)}`,
-    `O0000 N000016 G90 G00 X${fmt(firstCut.x)} Y${fmt(firstCut.y)}`,
-    `O0000 N000017 G90 G00 Z ${fmt(config.approach_z)}`,
-    `O0000 N000018 G90 G01 Z-${fmt(config.cut_start_depth)} F${Math.trunc(config.plunge_feed)}`,
-    "",
-  ];
-}
-
-function footer(config) {
-  return [
-    "",
-    `O0000 N000015 G90 G00 Z ${fmt(config.safe_z)}`,
-    "",
-    "O0000 N000015 G218",
-    "O0000 N000015",
-    "O0000 N009508 S0 T100",
-    "O0000 N009509 G90 G00 Z 0.000",
-    "O0000 N009510 G219",
-    "O0000 N009511 G04 X1.0",
-    "O0000 N009512 M92 M95",
-    "O0000 N009513 G65 P9900 L1",
-    "O0000 N009514 G53",
-    "O0000 N009515 G90 G00 Y 0.000",
-    "O0000 N009516 M30",
-  ];
-}
-
-function validate(parsed, config, outputLines) {
-  const warnings = [];
-  const cleanText = parsed.cleanLines.join("\n");
-  const outputText = outputLines.join("\n");
-  const minZ = parsed.ranges.min_z;
-  if (minZ !== null && minZ < -Math.abs(config.max_cut_depth)) {
-    warnings.push(`Z最小値 ${minZ.toFixed(3)} が最大深さ -${fmt(config.max_cut_depth)} を超えています。`);
-  }
-  if ((cleanText.match(/M30/g) || []).length > 1) warnings.push("Fusion側コードにM30が複数あります。");
-  if (cleanText.includes("G92")) warnings.push("Fusion側コードに既存のG92があります。原点補正の二重適用に注意してください。");
-  ["G54", "G55", "G56", "G57", "G58", "G59"].forEach((fixture) => {
-    if (cleanText.includes(fixture)) warnings.push(`Fusion側コードに${fixture}が含まれています。SHINX用G92補正と競合する可能性があります。`);
-  });
-  const firstToolLine = parsed.cleanLines.findIndex((line) => line.includes("T") || line.replaceAll(" ", "").includes("G65P9000"));
-  const firstSpindleLine = parsed.cleanLines.findIndex((line) => line.includes("M03") || line.includes("M3"));
-  if (firstSpindleLine >= 0 && (firstToolLine < 0 || firstSpindleLine < firstToolLine)) {
-    warnings.push("Fusion側コードに工具取得前のM03があります。変換後はSHINXヘッダー側へ移動しています。");
-  }
-  if (parsed.modal.distance === "G91") warnings.push("入力本文がG91のまま終了している可能性があります。");
-  if (!outputText.includes("S0") && !outputText.includes("M05")) warnings.push("主軸停止コードが見つかりません。");
-  if (!outputText.includes("G65 P9900")) warnings.push("工具返却 G65 P9900 L1 が見つかりません。");
-
-  const { min_x: minX, max_x: maxX, min_y: minY, max_y: maxY } = parsed.ranges;
-  if (minX !== null && maxX !== null && (minX < -config.clearance || maxX > config.material_size_x + config.clearance)) {
-    warnings.push(`X移動範囲 ${minX.toFixed(3)} .. ${maxX.toFixed(3)} が材料X寸法+逃げ幅を超える可能性があります。`);
-  }
-  if (minY !== null && maxY !== null && (minY < -config.clearance || maxY > config.material_size_y + config.clearance)) {
-    warnings.push(`Y移動範囲 ${minY.toFixed(3)} .. ${maxY.toFixed(3)} が材料Y寸法+逃げ幅を超える可能性があります。`);
-  }
-
-  const machineMinX = config.machine_origin_x + (minX ?? 0);
-  const machineMaxX = config.machine_origin_x + (maxX ?? 0);
-  const machineMinY = config.machine_origin_y + (minY ?? 0);
-  const machineMaxY = config.machine_origin_y + (maxY ?? 0);
-  if (machineMinX < config.stroke.min_x || machineMaxX > config.stroke.max_x) {
-    warnings.push(`原点補正後X機械座標 ${machineMinX.toFixed(3)} .. ${machineMaxX.toFixed(3)} が設定ストローク外です。`);
-  }
-  if (machineMinY < config.stroke.min_y || machineMaxY > config.stroke.max_y) {
-    warnings.push(`原点補正後Y機械座標 ${machineMinY.toFixed(3)} .. ${machineMaxY.toFixed(3)} が設定ストローク外です。`);
-  }
-  return warnings;
-}
-
-function convertText(text, config) {
-  const parsed = parseProgram(text);
-  const fusionTool = parsed.tools[0] || 1;
-  const shinxTool = Number(config.tool_mapping[String(fusionTool)] || fusionTool);
-  const spindleSpeed = parsed.spindleSpeeds[0] || Number(config.spindle_speed);
-  const outputLines = [
-    ...header(config, shinxTool, spindleSpeed),
-    ...originBlock(config, parsed.firstCut),
-    ...parsed.bodyLines.map((line) => `O0000 N000016 ${line}`),
-    ...footer(config),
-  ];
-  const warnings = validate(parsed, config, outputLines);
-  if (parsed.tools.length > 1) warnings.push(`MVPは1工具のみ対応です。検出工具 ${parsed.tools.join(", ")} のうち T${fusionTool} を使用しました。`);
-  return {
-    output: `${outputLines.join("\n")}\n`,
-    log: {
-      fusion_tool: fusionTool,
-      shinx_tool: shinxTool,
-      spindle_speed: spindleSpeed,
-      machine_origin: { x: config.machine_origin_x, y: config.machine_origin_y },
-      first_cut: parsed.firstCut,
-      ranges: parsed.ranges,
+    rows.push({
+      line: lineNumber,
+      raw,
+      oNumber,
+      nNumber,
+      gCode,
+      mode: state.mode,
+      x: state.x,
+      y: state.y,
+      z: state.z,
+      f: state.f,
+      s: state.s,
+      t: state.t,
+      tool: state.tool || "",
       warnings,
-      removed_lines: parsed.removedLines,
-      inserted_shinx_codes: ["M06/M95/G53/M92", `T${shinxTool}`, "G65 P9000 L1", "M23/M03/S/G04", "G92 原点補正", "G218/G219", "G65 P9900 L1", "M30"],
-      body_line_count: parsed.bodyLines.length,
-      converted_arc_count: parsed.convertedArcCount,
-    },
+    });
+  });
+
+  if (!state.hasG92) addCheck("danger", "", "G92がありません");
+  if (!state.hasM21) addCheck("warn", "", "M21がありません");
+  if (!state.hasP9000) addCheck("danger", "", "P9000工具取得がありません");
+  if (!state.hasP9900) addCheck("danger", "", "P9900工具返却がありません");
+  if (state.mode === "G91") addCheck("warn", "", "G91のまま終了しています");
+  if (state.z < zValues().safeZ - 0.001) addCheck("warn", "", "加工終了時にSafeZへ戻っていません");
+  if (stats.minZ !== null && stats.minZ < -cfg.allowOvercut) addCheck("danger", "", `最深Z ${fmt(stats.minZ)} が許容突抜 ${fmt(cfg.allowOvercut)} を超えています`);
+  if (!state.hasM92 || !state.hasM95) addCheck("warn", "", "M92/M95が不足しています");
+  if (!state.hasG218 || !state.hasG219) addCheck("warn", "", "G218/G219が不足しています");
+  if (state.toolLoaded) addCheck("danger", "", "工具返却なしで終了しています");
+  const hasM30 = rows.some((row) => /(^|\s)M\s*30(\s|$)/i.test(row.raw));
+  if (hasM30 && !state.hasP9900) addCheck("danger", "", "工具返却なしでM30があります");
+  if (modeHistory.length > 12) addCheck("warn", "", `G90/G91切替が多いです (${modeHistory.length}回)`);
+
+  return {
+    config: cfg,
+    z: zValues(),
+    rows,
+    checks,
+    tools: Array.from(tools.values()),
+    toolEvents,
+    segments,
+    zTrace,
+    modeHistory,
+    stats,
   };
 }
 
-function convert() {
+function renderZSummary(result = null) {
+  const z = zValues();
+  const rows = [
+    ["materialThickness", config.materialThickness],
+    ["safeClearance", config.safeClearance],
+    ["approachClearance", config.approachClearance],
+    ["materialTopZ", z.materialTopZ],
+    ["safeZ", z.safeZ],
+    ["approachZ", z.approachZ],
+  ];
+  if (result) {
+    rows.push(
+      ["最深Z", result.stats.minZ],
+      ["Z下降量", result.stats.zDown],
+      ["Z上昇量", result.stats.zUp],
+      ["G91 Z累積", result.stats.g91ZTotal],
+      ["G90/G91切替", `${result.modeHistory.length} 回`],
+    );
+  }
+  $("zSummary").innerHTML = rows.map(([label, value]) => `<div class="metric"><b>${label}</b><span>${typeof value === "string" ? escapeHtml(value) : fmt(value)}</span></div>`).join("");
+}
+
+function renderChecks(result) {
+  const danger = result.checks.filter((c) => c.severity === "danger").length;
+  const warn = result.checks.filter((c) => c.severity === "warn").length;
+  $("checkSummary").innerHTML = `<div class="metric ${danger ? "check-danger" : warn ? "check-warn" : "check-ok"}"><b>${danger ? "要確認" : warn ? "注意" : "OK"}</b><span>危険 ${danger} / 警告 ${warn}</span></div>`;
+  $("checkList").innerHTML = result.checks.length
+    ? result.checks.map((c) => `<div class="check-item check-${c.severity}"><b>${c.line || "-"}</b> ${escapeHtml(c.message)}</div>`).join("")
+    : `<div class="check-item check-ok">警告はありません</div>`;
+}
+
+function renderTools(result) {
+  $("toolList").innerHTML = result.tools.length
+    ? result.tools.map((tool) => `
+      <div class="tool-card">
+        <b>T${escapeHtml(tool.tool)}</b>
+        <span>P9000: ${tool.p9000Line || "-"} / P9900: ${tool.p9900Line || "-"}</span><br />
+        <span>S${tool.spindle || "-"} / Z最深 ${fmt(tool.minZ)} / 時間 ${fmt(tool.estimatedMinutes, 2)}分 / 警告 ${tool.warnings}</span><br />
+        <span>X ${fmt(tool.minX)}..${fmt(tool.maxX)} / Y ${fmt(tool.minY)}..${fmt(tool.maxY)}</span>
+      </div>`).join("")
+    : `<div class="tool-card">工具情報なし</div>`;
+}
+
+function renderRows(result) {
+  $("lineCount").textContent = `${result.rows.length} 行`;
+  $("coordTable").querySelector("tbody").innerHTML = result.rows.map((row) => `
+    <tr class="${row.warnings.length ? "warn-row" : ""}">
+      <td>${row.line}</td>
+      <td title="${escapeHtml(row.raw)}">${escapeHtml(row.raw)}</td>
+      <td>${row.gCode || "-"}</td>
+      <td>${row.mode}</td>
+      <td>${fmt(row.x)}</td>
+      <td>${fmt(row.y)}</td>
+      <td>${fmt(row.z)}</td>
+      <td>${fmt(row.f, 0)}</td>
+      <td>${fmt(row.s, 0)}</td>
+      <td>${fmt(row.t, 0)}</td>
+      <td>${escapeHtml(row.tool || "")}</td>
+      <td>${escapeHtml(row.warnings.join(" / "))}</td>
+    </tr>
+  `).join("");
+}
+
+function drawXY(result) {
+  const canvas = $("xyCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+
+  const pad = 34;
+  const xs = [0, config.materialX, ...result.segments.flatMap((s) => [s.from.x, s.to.x])];
+  const ys = [0, config.materialY, ...result.segments.flatMap((s) => [s.from.y, s.to.y])];
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const scale = Math.min((w - pad * 2) / Math.max(1, maxX - minX), (h - pad * 2) / Math.max(1, maxY - minY));
+  const toPx = (p) => ({
+    x: pad + (p.x - minX) * scale,
+    y: h - pad - (p.y - minY) * scale,
+  });
+
+  ctx.strokeStyle = "#d1d5db";
+  ctx.lineWidth = 1;
+  const mat0 = toPx({ x: 0, y: 0 });
+  const mat1 = toPx({ x: config.materialX, y: config.materialY });
+  ctx.strokeRect(mat0.x, mat1.y, mat1.x - mat0.x, mat0.y - mat1.y);
+
+  result.segments.forEach((seg) => {
+    const a = toPx(seg.from);
+    const b = toPx(seg.to);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = seg.warning ? "#b91c1c" : seg.type === "G00" ? "#6b7280" : ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
+    ctx.lineWidth = seg.type === "G00" ? 1 : 2;
+    ctx.setLineDash(seg.type === "G00" ? [5, 5] : []);
+    ctx.stroke();
+  });
+  ctx.setLineDash([]);
+
+  if (result.stats.g92) {
+    const g92 = toPx(result.stats.g92);
+    ctx.fillStyle = "#7c3aed";
+    ctx.beginPath();
+    ctx.arc(g92.x, g92.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  if (result.stats.firstMove) {
+    const first = toPx(result.stats.firstMove);
+    ctx.fillStyle = "#111827";
+    ctx.fillRect(first.x - 4, first.y - 4, 8, 8);
+  }
+  result.toolEvents.forEach((event) => {
+    const p = toPx(event);
+    ctx.fillStyle = event.type === "P9000" ? "#f59e0b" : "#dc2626";
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y - 7);
+    ctx.lineTo(p.x + 7, p.y + 7);
+    ctx.lineTo(p.x - 7, p.y + 7);
+    ctx.closePath();
+    ctx.fill();
+  });
+  $("rangeSummary").textContent = `X ${fmt(result.stats.minX)}..${fmt(result.stats.maxX)} / Y ${fmt(result.stats.minY)}..${fmt(result.stats.maxY)}`;
+}
+
+function drawZ(result) {
+  const canvas = $("zCanvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
+  const trace = result.zTrace;
+  const minZ = Math.min(result.z.minAllowedZ, result.stats.minZ ?? 0);
+  const maxZ = Math.max(result.z.safeZ, result.stats.maxZ ?? result.z.safeZ);
+  const pad = 24;
+  const xFor = (i) => pad + (trace.length <= 1 ? 0 : (i / (trace.length - 1)) * (w - pad * 2));
+  const yFor = (z) => h - pad - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - pad * 2);
+
+  [
+    ["safeZ", result.z.safeZ, "#0f766e"],
+    ["approachZ", result.z.approachZ, "#2563eb"],
+    ["materialTopZ", result.z.materialTopZ, "#111827"],
+    ["limit", result.z.minAllowedZ, "#b91c1c"],
+  ].forEach(([, z, color]) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(pad, yFor(z));
+    ctx.lineTo(w - pad, yFor(z));
+    ctx.stroke();
+  });
+
+  if (trace.length) {
+    ctx.beginPath();
+    trace.forEach((point, i) => {
+      const x = xFor(i);
+      const y = yFor(point.z);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    });
+    ctx.strokeStyle = "#0f766e";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+  $("zRangeSummary").textContent = `最深Z ${fmt(result.stats.minZ)} / 下降 ${fmt(result.stats.zDown)} / 上昇 ${fmt(result.stats.zUp)} / G91累積 ${fmt(result.stats.g91ZTotal)}`;
+}
+
+function renderAnalysis(result) {
+  renderZSummary(result);
+  renderChecks(result);
+  renderTools(result);
+  renderRows(result);
+  drawXY(result);
+  drawZ(result);
+  $("jsonBtn").disabled = false;
+  $("coordCsvBtn").disabled = false;
+  $("checkCsvBtn").disabled = false;
+}
+
+function analyze() {
   saveConfig();
-  const result = convertText($("inputCode").value, currentConfig);
-  convertedText = result.output;
-  $("outputCode").value = convertedText;
-  $("logOutput").innerHTML = renderLog(result.log);
-  $("saveNcBtn").disabled = !convertedText;
-  $("saveTxtBtn").disabled = !convertedText;
+  analysis = analyzeNc($("ncInput").value, config);
+  renderAnalysis(analysis);
 }
 
-function renderLog(log) {
-  const ranges = log.ranges || {};
-  const warnings = (log.warnings || []).map((w) => `! ${escapeHtml(w)}`).join("\n") || "なし";
-  const removed = (log.removed_lines || []).slice(0, 80).map(escapeHtml).join("\n") || "なし";
-  const removedSuffix = (log.removed_lines || []).length > 80 ? `\n...他 ${(log.removed_lines || []).length - 80} 行` : "";
-  const inserted = (log.inserted_shinx_codes || []).map((v) => `+ ${escapeHtml(v)}`).join("\n");
-  return [
-    `使用工具: Fusion T${log.fusion_tool} -> SHINX T${log.shinx_tool}`,
-    `主軸回転数: S${log.spindle_speed}`,
-    `機械原点: X${log.machine_origin.x} Y${log.machine_origin.y}`,
-    `加工開始XY: X${rangeFmt(log.first_cut?.x)} Y${rangeFmt(log.first_cut?.y)}`,
-    `加工範囲: X ${rangeFmt(ranges.min_x)} .. ${rangeFmt(ranges.max_x)} / Y ${rangeFmt(ranges.min_y)} .. ${rangeFmt(ranges.max_y)} / Z ${rangeFmt(ranges.min_z)} .. ${rangeFmt(ranges.max_z)}`,
-    `本文行数: ${log.body_line_count}`,
-    `IJK→R変換: ${log.converted_arc_count || 0} 行`,
-    "",
-    "警告:",
-    `<span class="warning">${warnings}</span>`,
-    "",
-    "削除したコード:",
-    removed + removedSuffix,
-    "",
-    "挿入したSHINX固有コード:",
-    inserted,
-  ].join("\n");
+function csvEscape(value) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 
-function rangeFmt(value) {
-  return value === null || value === undefined ? "-" : Number(value).toFixed(3);
+function download(filename, text, type = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function downloadJson() {
+  if (!analysis) return;
+  download("shinx_nc_analysis.json", JSON.stringify(analysis, null, 2), "application/json;charset=utf-8");
+}
+
+function downloadCoordCsv() {
+  if (!analysis) return;
+  const header = ["line", "raw", "gCode", "mode", "x", "y", "z", "f", "s", "t", "tool", "warnings"];
+  const rows = analysis.rows.map((row) => header.map((key) => csvEscape(key === "warnings" ? row.warnings.join(" / ") : row[key])).join(","));
+  download("shinx_coordinates.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
+}
+
+function downloadCheckCsv() {
+  if (!analysis) return;
+  const header = ["severity", "line", "message"];
+  const rows = analysis.checks.map((check) => header.map((key) => csvEscape(check[key])).join(","));
+  download("shinx_safety_checks.csv", [header.join(","), ...rows].join("\n"), "text/csv;charset=utf-8");
 }
 
 function escapeHtml(value) {
   return String(value).replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[ch]);
 }
 
-function download(ext) {
-  const blob = new Blob([convertedText], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `shinx_converted.${ext}`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function readFile(file) {
   const reader = new FileReader();
   reader.onload = () => {
-    $("inputCode").value = reader.result;
-    convert();
+    $("ncInput").value = reader.result;
+    analyze();
   };
   reader.readAsText(file);
 }
 
-$("convertBtn").addEventListener("click", convert);
-$("saveNcBtn").addEventListener("click", () => download("nc"));
-$("saveTxtBtn").addEventListener("click", () => download("txt"));
-$("fileInput").addEventListener("change", (event) => {
-  const file = event.target.files?.[0];
-  if (file) readFile(file);
-});
-$("faceSelect").addEventListener("change", () => {
-  const face = currentConfig.faces?.[$("faceSelect").value];
-  if (!face) return;
-  $("machine_origin_x").value = face.machine_origin_x;
-  $("machine_origin_y").value = face.machine_origin_y;
-});
-
-const dropZone = $("dropZone");
-["dragenter", "dragover"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    dropZone.classList.add("drag");
+function bindEvents() {
+  $("analyzeBtn").addEventListener("click", analyze);
+  $("jsonBtn").addEventListener("click", downloadJson);
+  $("coordCsvBtn").addEventListener("click", downloadCoordCsv);
+  $("checkCsvBtn").addEventListener("click", downloadCheckCsv);
+  $("fileInput").addEventListener("change", (event) => {
+    const file = event.target.files?.[0];
+    if (file) readFile(file);
   });
-});
-["dragleave", "drop"].forEach((eventName) => {
-  dropZone.addEventListener(eventName, (event) => {
-    event.preventDefault();
-    dropZone.classList.remove("drag");
+  $("machiningFace").addEventListener("change", () => {
+    const face = config.faces?.[$("machiningFace").value];
+    if (!face) return;
+    $("machineOriginX").value = face.machineOriginX;
+    $("machineOriginY").value = face.machineOriginY;
+    saveConfig();
+    renderZSummary();
   });
-});
-dropZone.addEventListener("drop", (event) => {
-  const file = event.dataTransfer.files?.[0];
-  if (file) readFile(file);
-});
+  fields.forEach((name) => {
+    $(name).addEventListener("change", () => {
+      saveConfig();
+      renderZSummary();
+      if ($("ncInput").value.trim()) analyze();
+    });
+  });
+  const dropZone = $("dropZone");
+  ["dragenter", "dragover"].forEach((eventName) => {
+    dropZone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      dropZone.classList.add("drag");
+    });
+  });
+  ["dragleave", "drop"].forEach((eventName) => {
+    dropZone.addEventListener(eventName, (event) => {
+      event.preventDefault();
+      dropZone.classList.remove("drag");
+    });
+  });
+  dropZone.addEventListener("drop", (event) => {
+    const file = event.dataTransfer.files?.[0];
+    if (file) readFile(file);
+  });
+  window.addEventListener("resize", () => {
+    if (analysis) {
+      drawXY(analysis);
+      drawZ(analysis);
+    }
+  });
+}
 
 renderConfig();
+bindEvents();

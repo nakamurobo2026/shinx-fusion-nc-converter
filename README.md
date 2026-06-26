@@ -1,35 +1,29 @@
-# SHINX Fusion NC Converter
+# SHINX NC Viewer
 
-Fusion 360 CAD/CAM から出力した Fanuc系Gコードを、SHINX 20ZXGN 用NCコードへ変換するWebアプリです。
+Fusion 360のSHINX 20ZXGN専用ポストから出力されたNCコードを、実機投入前に確認するWebビューアです。
 
 ## Web版
 
 GitHub Pagesで公開する静的Web版は `docs/` にあります。
 
 - サーバー不要
-- ブラウザ内で変換
+- NC変換やNC生成は行いません
 - Gコードは外部送信しません
 - 設定はlocalStorageに保存
-- `.nc` / `.txt` で保存
-- Fusionの `FANUC (with G91)` / `fanuc incremental.cps` 由来のインクリメンタル出力に対応し、I/J/K円弧はR指定へ変換
+- SHINX用NCのG90/G91、座標、工具、Z、Mコードを解析
+- 2D XYプレビューと安全チェックを表示
+- 解析結果JSON、座標CSV、安全チェックCSVを保存
 
-## SHINX原点設定シーケンス
+## SHINX NC Viewer
 
-変換後は加工前に次の順序を固定で出力します。
+ビューアでは、ポスト出力済みNCの以下を確認します。
 
-```nc
-G90 G00 X{machine_origin_x} Y{machine_origin_y}
-G92 X0.000 Y0.000
-G90 G00 X{first_cut_x} Y{first_cut_y}
-G90 G00 Z{safe_z}
-G90 G00 Z{approach_z}
-G91 G01 Z-{approach_clearance} F{plunge_feed}
-```
-
-`first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
-Fusion 360専用ポスト `shinx_20zxgn.cps` では、最初の位置決めをG90で行い、材料上面への下降後の加工本文はG91差分で出力します。
-Fusionの工具経路は再計算せず、前回Fusion位置からのX/Y/Z差分、送り、R円弧を出力します。
-専用ポストの `safe_z` / `approach_z` は `autoSafeHeight=true` の時、材料厚 + 余裕量から自動計算します。
+- G90/G91の座標追跡
+- 各行の実行後X/Y/Z
+- G92、M21、P9000/P9900、G218/G219、M92/M95の有無
+- SafeZ、ApproachZ、材料上面Z、最深Z
+- G00/G01/G02/G03の2D XY表示
+- 工具ごとの加工範囲と警告数
 
 ## ローカルFastAPI版
 
