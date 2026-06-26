@@ -13,6 +13,21 @@ GitHub Pagesで公開する静的Web版は `docs/` にあります。
 - `.nc` / `.txt` で保存
 - Fusionの `FANUC (with G91)` / `fanuc incremental.cps` 由来のインクリメンタル出力に対応し、I/J/K円弧はR指定へ変換
 
+## SHINX原点設定シーケンス
+
+変換後は加工前に次の順序を固定で出力します。
+
+```nc
+G90 G00 X{machine_origin_x} Y{machine_origin_y}
+G92 X0.000 Y0.000
+G90 G00 Z{safe_z}
+G90 G00 X{first_cut_x} Y{first_cut_y}
+G90 G00 Z{approach_z}
+G90 G01 Z-{cut_start_depth} F{plunge_feed}
+```
+
+`first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
+
 ## ローカルFastAPI版
 
 Python + FastAPI版は `shinx_converter/` にあります。

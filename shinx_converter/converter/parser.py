@@ -20,6 +20,7 @@ class ParsedProgram:
     ranges: dict[str, float | None] = field(default_factory=dict)
     modal: dict[str, str | None] = field(default_factory=dict)
     converted_arc_count: int = 0
+    first_cut: dict[str, float] = field(default_factory=dict)
 
 
 def strip_comments(line: str) -> str:
@@ -82,6 +83,7 @@ def parse_program(text: str) -> ParsedProgram:
     modal = {"distance": None, "motion": None}
     current_plane = "G17"
     converted_arc_count = 0
+    first_cut: dict[str, float] = {}
     allowed_g = {0, 1, 2, 3, 17, 18, 19, 40, 41, 42, 90, 91}
     allowed_letters = {"G", "X", "Y", "Z", "I", "J", "K", "R", "F", "S"}
     hazardous_m = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 21, 23, 30, 92, 95}
@@ -111,6 +113,7 @@ def parse_program(text: str) -> ParsedProgram:
             continue
 
         line_motion = modal["motion"]
+        line_values = {letter: value for letter, value in line_words}
         for letter, value in line_words:
             if letter == "G":
                 code = int(value)
@@ -122,6 +125,17 @@ def parse_program(text: str) -> ParsedProgram:
         arc_radius = None
         if line_motion in {"G02", "G03"}:
             arc_radius = ijk_to_radius(line_words, current_plane)
+
+        if not first_cut and ("X" in line_values or "Y" in line_values):
+            first_cut = {"x": line_values.get("X", 0.0), "y": line_values.get("Y", 0.0)}
+            for axis in ("X", "Y"):
+                if axis in line_values:
+                    axis_key_min = f"min_{axis.lower()}"
+                    axis_key_max = f"max_{axis.lower()}"
+                    ranges[axis_key_min] = line_values[axis] if ranges[axis_key_min] is None else min(ranges[axis_key_min], line_values[axis])
+                    ranges[axis_key_max] = line_values[axis] if ranges[axis_key_max] is None else max(ranges[axis_key_max], line_values[axis])
+            if line_motion in {None, "G00"}:
+                continue
 
         kept_words: list[str] = []
         inserted_radius = False
@@ -165,4 +179,6 @@ def parse_program(text: str) -> ParsedProgram:
         else:
             removed_lines.append(clean)
 
-    return ParsedProgram(original_lines, clean_lines, body_lines, removed_lines, tools, spindle_speeds, ranges, modal, converted_arc_count)
+    if not first_cut:
+        first_cut = {"x": 0.0, "y": 0.0}
+    return ParsedProgram(original_lines, clean_lines, body_lines, removed_lines, tools, spindle_speeds, ranges, modal, converted_arc_count, first_cut)

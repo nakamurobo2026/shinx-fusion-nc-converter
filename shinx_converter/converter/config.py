@@ -10,6 +10,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "machine_origin_x": -1303.520,
     "machine_origin_y": -2610.910,
     "safe_z": 60.0,
+    "approach_z": 5.0,
     "spindle_speed": 5000,
     "plunge_feed": 1500,
     "cut_start_depth": 31.0,

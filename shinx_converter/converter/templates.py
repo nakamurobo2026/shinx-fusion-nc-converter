@@ -22,13 +22,15 @@ def header(config: dict, shinx_tool: int, spindle_speed: int) -> list[str]:
     ]
 
 
-def origin_block(config: dict) -> list[str]:
+def origin_block(config: dict, first_cut: dict[str, float]) -> list[str]:
     return [
         f"O0000 N000012 G90 G00 X{fmt(config['machine_origin_x'])} Y{fmt(config['machine_origin_y'])}",
         "O0000 N000013 G92 X 0.000 Y 0.000",
         "O0000 N000014 M21",
         f"O0000 N000015 G90 G00 Z {fmt(config['safe_z'])}",
-        f"O0000 N000016 G91 G01 Z-{fmt(config['cut_start_depth'])} F{int(config['plunge_feed'])}",
+        f"O0000 N000016 G90 G00 X{fmt(first_cut['x'])} Y{fmt(first_cut['y'])}",
+        f"O0000 N000017 G90 G00 Z {fmt(config['approach_z'])}",
+        f"O0000 N000018 G90 G01 Z-{fmt(config['cut_start_depth'])} F{int(config['plunge_feed'])}",
         "",
     ]
 

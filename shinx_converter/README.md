@@ -14,6 +14,19 @@ Fusion 360 CAD/CAM から出力した Fanuc系Gコードを、SHINX 20ZXGN 用NC
 - `.nc` / `.txt` 保存
 - `config.json` に設定保存
 
+## SHINX原点設定シーケンス
+
+```nc
+G90 G00 X{machine_origin_x} Y{machine_origin_y}
+G92 X0.000 Y0.000
+G90 G00 Z{safe_z}
+G90 G00 X{first_cut_x} Y{first_cut_y}
+G90 G00 Z{approach_z}
+G90 G01 Z-{cut_start_depth} F{plunge_feed}
+```
+
+`first_cut_x` / `first_cut_y` はFusion側Gコードの最初のXY移動から自動抽出します。
+
 ## 起動
 
 通常のPythonがPATHにある場合:

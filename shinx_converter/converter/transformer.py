@@ -14,7 +14,7 @@ def convert(text: str, config: dict) -> dict:
 
     output_lines = [
         *header(config, shinx_tool, spindle_speed),
-        *origin_block(config),
+        *origin_block(config, parsed.first_cut),
         *[f"O0000 N000016 {line}" for line in parsed.body_lines],
         *footer(config),
     ]
@@ -37,6 +37,7 @@ def convert(text: str, config: dict) -> dict:
         "shinx_tool": shinx_tool,
         "spindle_speed": spindle_speed,
         "machine_origin": {"x": config["machine_origin_x"], "y": config["machine_origin_y"]},
+        "first_cut": parsed.first_cut,
         "ranges": parsed.ranges,
         "warnings": warnings,
         "removed_lines": parsed.removed_lines,

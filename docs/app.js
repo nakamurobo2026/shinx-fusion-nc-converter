@@ -2,6 +2,7 @@ const DEFAULT_CONFIG = {
   machine_origin_x: -1303.52,
   machine_origin_y: -2610.91,
   safe_z: 60.0,
+  approach_z: 5.0,
   spindle_speed: 5000,
   plunge_feed: 1500,
   cut_start_depth: 31.0,
@@ -35,6 +36,7 @@ const fields = [
   "machine_origin_x",
   "machine_origin_y",
   "safe_z",
+  "approach_z",
   "spindle_speed",
   "plunge_feed",
   "cut_start_depth",
@@ -160,6 +162,7 @@ function parseProgram(text) {
   const modal = { distance: null, motion: null };
   let currentPlane = "G17";
   let convertedArcCount = 0;
+  let firstCut = null;
 
   text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n").forEach((raw) => {
     const clean = normalizeLine(raw);
@@ -182,6 +185,7 @@ function parseProgram(text) {
     }
 
     let lineMotion = modal.motion;
+    const lineValues = Object.fromEntries(lineWords);
     lineWords.forEach(([letter, value]) => {
       if (letter !== "G") return;
       const code = Math.trunc(value);
@@ -189,6 +193,19 @@ function parseProgram(text) {
       if ([17, 18, 19].includes(code)) currentPlane = `G${code}`;
     });
     const arcRadius = ["G02", "G03"].includes(lineMotion) ? ijkToRadius(lineWords, currentPlane) : null;
+
+    if (!firstCut && (lineValues.X !== undefined || lineValues.Y !== undefined)) {
+      firstCut = { x: lineValues.X ?? 0, y: lineValues.Y ?? 0 };
+      ["X", "Y"].forEach((axisLetter) => {
+        if (lineValues[axisLetter] === undefined) return;
+        const axis = axisLetter.toLowerCase();
+        const minKey = `min_${axis}`;
+        const maxKey = `max_${axis}`;
+        ranges[minKey] = ranges[minKey] === null ? lineValues[axisLetter] : Math.min(ranges[minKey], lineValues[axisLetter]);
+        ranges[maxKey] = ranges[maxKey] === null ? lineValues[axisLetter] : Math.max(ranges[maxKey], lineValues[axisLetter]);
+      });
+      if (lineMotion === null || lineMotion === "G00") return;
+    }
 
     const kept = [];
     let insertedRadius = false;
@@ -233,7 +250,7 @@ function parseProgram(text) {
     }
   });
 
-  return { cleanLines, bodyLines, removedLines, tools, spindleSpeeds, ranges, modal, convertedArcCount };
+  return { cleanLines, bodyLines, removedLines, tools, spindleSpeeds, ranges, modal, convertedArcCount, firstCut: firstCut || { x: 0, y: 0 } };
 }
 
 function formatNumber(value) {
@@ -261,13 +278,15 @@ function header(config, shinxTool, spindleSpeed) {
   ];
 }
 
-function originBlock(config) {
+function originBlock(config, firstCut) {
   return [
     `O0000 N000012 G90 G00 X${fmt(config.machine_origin_x)} Y${fmt(config.machine_origin_y)}`,
     "O0000 N000013 G92 X 0.000 Y 0.000",
     "O0000 N000014 M21",
     `O0000 N000015 G90 G00 Z ${fmt(config.safe_z)}`,
-    `O0000 N000016 G91 G01 Z-${fmt(config.cut_start_depth)} F${Math.trunc(config.plunge_feed)}`,
+    `O0000 N000016 G90 G00 X${fmt(firstCut.x)} Y${fmt(firstCut.y)}`,
+    `O0000 N000017 G90 G00 Z ${fmt(config.approach_z)}`,
+    `O0000 N000018 G90 G01 Z-${fmt(config.cut_start_depth)} F${Math.trunc(config.plunge_feed)}`,
     "",
   ];
 }
@@ -341,7 +360,7 @@ function convertText(text, config) {
   const spindleSpeed = parsed.spindleSpeeds[0] || Number(config.spindle_speed);
   const outputLines = [
     ...header(config, shinxTool, spindleSpeed),
-    ...originBlock(config),
+    ...originBlock(config, parsed.firstCut),
     ...parsed.bodyLines.map((line) => `O0000 N000016 ${line}`),
     ...footer(config),
   ];
@@ -354,6 +373,7 @@ function convertText(text, config) {
       shinx_tool: shinxTool,
       spindle_speed: spindleSpeed,
       machine_origin: { x: config.machine_origin_x, y: config.machine_origin_y },
+      first_cut: parsed.firstCut,
       ranges: parsed.ranges,
       warnings,
       removed_lines: parsed.removedLines,
@@ -384,6 +404,7 @@ function renderLog(log) {
     `使用工具: Fusion T${log.fusion_tool} -> SHINX T${log.shinx_tool}`,
     `主軸回転数: S${log.spindle_speed}`,
     `機械原点: X${log.machine_origin.x} Y${log.machine_origin.y}`,
+    `加工開始XY: X${rangeFmt(log.first_cut?.x)} Y${rangeFmt(log.first_cut?.y)}`,
     `加工範囲: X ${rangeFmt(ranges.min_x)} .. ${rangeFmt(ranges.max_x)} / Y ${rangeFmt(ranges.min_y)} .. ${rangeFmt(ranges.max_y)} / Z ${rangeFmt(ranges.min_z)} .. ${rangeFmt(ranges.max_z)}`,
     `本文行数: ${log.body_line_count}`,
     `IJK→R変換: ${log.converted_arc_count || 0} 行`,
