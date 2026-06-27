@@ -29,7 +29,7 @@ body {
 .topbar {
   height: 78px;
   display: grid;
-  grid-template-columns: minmax(230px, 1fr) 190px auto auto 210px;
+  grid-template-columns: minmax(210px, .9fr) 180px auto auto 230px 190px;
   align-items: center;
   gap: 14px;
   padding: 10px 16px;
@@ -110,6 +110,38 @@ button:hover, button.active {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.perfbar {
+  display: grid;
+  grid-template-columns: auto 84px minmax(90px, 1fr);
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.perfbar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.perfbar input {
+  margin: 0;
+}
+
+.perfbar select {
+  width: 84px;
+  height: 30px;
+  padding: 0 6px;
+}
+
+#profileLabel {
+  font: 700 11px Consolas, "Courier New", monospace;
+  white-space: nowrap;
 }
 
 .jumpbar button {
@@ -404,6 +436,14 @@ textarea {
   padding: 2px 9px;
   border-bottom: 1px solid #edf1f4;
   cursor: pointer;
+}
+
+.nc-pad {
+  padding: 5px 10px;
+  color: var(--muted);
+  background: #f1f5f7;
+  font-size: 11px;
+  text-align: center;
 }
 
 .nc-row:hover {

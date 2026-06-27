@@ -45,6 +45,16 @@
         <button id="jumpEndBtn" title="最後へ">最後</button>
       </div>
 
+      <div class="perfbar">
+        <label><input id="lightModeToggle" type="checkbox" />軽量再生</label>
+        <select id="qualitySelect" title="プレビュー品質">
+          <option value="high">高品質</option>
+          <option value="standard" selected>標準</option>
+          <option value="light">軽量</option>
+        </select>
+        <span id="profileLabel">FPS -- / draw --ms</span>
+      </div>
+
       <div class="now-line">
         <span>現在行</span>
         <strong id="currentLineLabel">----</strong>

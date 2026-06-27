@@ -10,6 +10,23 @@ const state = {
   xyMode: "work",
 };
 
+const perf = {
+  lastHud: 0,
+  lastNc: 0,
+  lastNcScroll: 0,
+  lastCanvas: 0,
+  lastDoneTrace: 0,
+  lastProfile: 0,
+  frameCount: 0,
+  fps: 0,
+  drawMs: 0,
+};
+
+const quality = {
+  mode: "standard",
+  lightweight: false,
+};
+
 let scene;
 let camera;
 let renderer;
@@ -23,12 +40,18 @@ let toolMesh;
 let pathGroup;
 let markerGroup;
 let animationId;
+let xyCacheCanvas;
+let xyCacheInfo = null;
+let sectionCacheCanvas;
+let sectionCacheInfo = null;
+let ncWindowStart = -1;
 
 function emptyAnalysis() {
   return {
     rows: [],
     motionRows: [],
     segments: [],
+    motionBlocks: [],
     tools: [],
     toolEvents: [],
     safety: [],
@@ -296,7 +319,23 @@ function analyzeNc(text) {
   if (stateNc.toolLoaded) addSafety("danger", "", "工具返却なしで終了しています");
   if (inferred.minZ < inferred.materialBottomZ - 1) addSafety("warn", "", "最深Zが材料下面を超えている可能性があります");
 
-  return { rows, motionRows, segments, toolEvents, tools: Array.from(toolMap.values()), safety, inferred };
+  const motionBlocks = segments.map((seg) => ({
+    lineIndex: seg.line,
+    ncLine: seg.raw,
+    x: seg.to.x,
+    y: seg.to.y,
+    z: seg.to.z,
+    f: seg.f,
+    s: seg.s,
+    t: seg.t,
+    mode: seg.mode,
+    type: seg.type,
+    estimatedTime: seg.duration,
+    cumulativeTime: seg.endTime,
+    drawSegment: { from: seg.from, to: seg.to },
+  }));
+
+  return { rows, motionRows, segments, motionBlocks, toolEvents, tools: Array.from(toolMap.values()), safety, inferred };
 }
 
 async function initThree() {
@@ -432,9 +471,12 @@ function addMarker(p, color, type, size = 6) {
 
 function animate(time = 0) {
   animationId = requestAnimationFrame(animate);
+  updateFps(time);
   state.lastFrame = time;
   if (state.playing && state.analysis.segments.length) {
     advancePlayback(playbackBlockStep());
+  } else {
+    throttledRender(time, false);
   }
 }
 
@@ -450,7 +492,7 @@ function advancePlayback(blocks) {
   if (state.index >= state.analysis.segments.length - 1) {
     state.playing = false;
   }
-  updateToolAtIndex(state.index);
+  throttledRender(performance.now(), true);
 }
 
 function currentPosition() {
@@ -472,17 +514,57 @@ function updateToolAtIndex(index) {
     return;
   }
   state.index = Math.max(0, Math.min(index, state.analysis.segments.length - 1));
-  const pos = currentPosition();
-  if (toolMesh) toolMesh.position.set(pos.x, pos.y, pos.z);
-  updateHud(pos);
-  renderNcList();
-  drawSection();
-  drawXY();
-  updateTimeline();
+  renderAllNow();
 }
 
 function jumpToIndex(index) {
   updateToolAtIndex(index);
+}
+
+function renderAllNow() {
+  const now = performance.now();
+  const pos = currentPosition();
+  if (toolMesh) toolMesh.position.set(pos.x, pos.y, pos.z);
+  updateHud(pos);
+  ncWindowStart = -1;
+  renderNcList(true);
+  drawSection(true);
+  drawXY(true);
+  updateTimeline();
+  perf.lastHud = now;
+  perf.lastNc = now;
+  perf.lastNcScroll = now;
+  perf.lastCanvas = now;
+}
+
+function throttledRender(now, playing) {
+  const light = quality.lightweight || quality.mode === "light";
+  const hudInterval = playing ? 100 : 0;
+  const ncInterval = playing ? (light ? 500 : 200) : 0;
+  const canvasInterval = playing ? (light ? 100 : 33) : 0;
+  const pos = currentPosition();
+  if (!playing || now - perf.lastHud >= hudInterval) {
+    updateHud(pos);
+    updateTimeline();
+    perf.lastHud = now;
+  }
+  if (!playing || now - perf.lastCanvas >= canvasInterval) {
+    const start = performance.now();
+    drawXY(false);
+    drawSection(false);
+    perf.drawMs = performance.now() - start;
+    perf.lastCanvas = now;
+  }
+  if (!playing || now - perf.lastNc >= ncInterval) {
+    const shouldScroll = !light && now - perf.lastNcScroll > 300;
+    renderNcList(shouldScroll);
+    perf.lastNc = now;
+    if (shouldScroll) perf.lastNcScroll = now;
+  }
+  if (!playing || now - perf.lastProfile > 250) {
+    updateProfile();
+    perf.lastProfile = now;
+  }
 }
 
 function updateHud(pos) {
@@ -493,6 +575,21 @@ function updateHud(pos) {
   $("hudS").textContent = fmt(pos.s, 0);
   $("hudT").textContent = fmt(pos.t, 0);
   $("currentLineLabel").textContent = pos.nNumber !== null && pos.nNumber !== undefined ? `N${String(pos.nNumber).padStart(6, "0")}` : (pos.line ? `L${pos.line}` : "----");
+}
+
+function updateFps(time) {
+  perf.frameCount += 1;
+  if (!perf.fpsStart) perf.fpsStart = time;
+  const elapsed = time - perf.fpsStart;
+  if (elapsed >= 500) {
+    perf.fps = perf.frameCount / elapsed * 1000;
+    perf.frameCount = 0;
+    perf.fpsStart = time;
+  }
+}
+
+function updateProfile() {
+  $("profileLabel").textContent = `FPS ${fmt(perf.fps, 0)} / B${state.index + 1} / draw ${fmt(perf.drawMs, 1)}ms`;
 }
 
 function renderSummary() {
@@ -528,19 +625,33 @@ function renderSafety() {
     : `<div class="safety-item">異常は検出されていません</div>`;
 }
 
-function renderNcList() {
+function renderNcList(autoScroll = false) {
   const activeLine = currentPosition().line;
-  $("ncList").innerHTML = state.analysis.rows.map((row) => {
+  const activeRowIndex = Math.max(0, state.analysis.rows.findIndex((row) => row.line === activeLine));
+  const radius = quality.lightweight || quality.mode === "light" ? 18 : 50;
+  const start = Math.max(0, activeRowIndex - radius);
+  const end = Math.min(state.analysis.rows.length, activeRowIndex + radius + 1);
+  if (ncWindowStart === start && $("ncList").dataset.activeLine === String(activeLine)) {
+    return;
+  }
+  ncWindowStart = start;
+  $("ncList").dataset.activeLine = String(activeLine);
+  const topPad = start > 0 ? `<div class="nc-pad">... ${start} lines above ...</div>` : "";
+  const bottomPad = end < state.analysis.rows.length ? `<div class="nc-pad">... ${state.analysis.rows.length - end} lines below ...</div>` : "";
+  const rowsHtml = state.analysis.rows.slice(start, end).map((row) => {
     const active = row.line === activeLine ? " active" : "";
     const label = row.nNumber !== null && row.nNumber !== undefined ? `N${String(row.nNumber).padStart(6, "0")}` : `L${row.line}`;
     const block = row.motionIndex !== null && row.motionIndex !== undefined ? `B${String(row.motionIndex + 1).padStart(4, "0")}` : "----";
     return `<div class="nc-row${active}" data-motion="${row.motionIndex ?? ""}" data-line="${row.line}"><span class="line"><b>${block}</b>${label}</span><span>${escapeHtml(row.raw)}</span></div>`;
   }).join("");
-  const active = $("ncList").querySelector(".nc-row.active");
-  if (active) active.scrollIntoView({ block: "center" });
+  $("ncList").innerHTML = topPad + rowsHtml + bottomPad;
+  if (autoScroll) {
+    const active = $("ncList").querySelector(".nc-row.active");
+    if (active) active.scrollIntoView({ block: "center" });
+  }
 }
 
-function drawSection() {
+function drawSection(forceCache = false) {
   const canvas = $("sectionCanvas");
   const ctx = canvas.getContext("2d");
   fitCanvas(canvas);
@@ -548,9 +659,23 @@ function drawSection() {
   const h = canvas.height;
   const inf = state.analysis.inferred;
   const pos = currentPosition();
+  const cacheKey = `${w},${h},${inf.safeZ},${inf.approachZ},${inf.materialTopZ},${inf.materialBottomZ},${inf.minZ},${inf.maxZ}`;
+  if (forceCache || !sectionCacheCanvas || sectionCacheInfo !== cacheKey) {
+    sectionCacheCanvas = document.createElement("canvas");
+    sectionCacheCanvas.width = w;
+    sectionCacheCanvas.height = h;
+    const cctx = sectionCacheCanvas.getContext("2d");
+    cctx.fillStyle = "#fff";
+    cctx.fillRect(0, 0, w, h);
+    drawSectionStatic(cctx, w, h, inf);
+    sectionCacheInfo = cacheKey;
+  }
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(sectionCacheCanvas, 0, 0);
+  drawSectionTool(ctx, w, h, inf, pos);
+}
+
+function drawSectionStatic(ctx, w, h, inf) {
   const minZ = Math.min(inf.materialBottomZ, inf.minZ, 0);
   const maxZ = Math.max(inf.safeZ, inf.maxZ, inf.materialThickness + 20);
   const yFor = (z) => h - 28 - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - 54);
@@ -572,6 +697,12 @@ function drawSection() {
     ctx.font = "12px Segoe UI";
     ctx.fillText(label, 28, yFor(z) - 4);
   });
+}
+
+function drawSectionTool(ctx, w, h, inf, pos) {
+  const minZ = Math.min(inf.materialBottomZ, inf.minZ, 0);
+  const maxZ = Math.max(inf.safeZ, inf.maxZ, inf.materialThickness + 20);
+  const yFor = (z) => h - 28 - ((z - minZ) / Math.max(1, maxZ - minZ)) * (h - 54);
   const toolY = yFor(pos.z);
   ctx.strokeStyle = "#111827";
   ctx.lineWidth = 4;
@@ -591,7 +722,7 @@ function drawSection() {
   ctx.fillText(`Z ${fmt(pos.z)}`, w * 0.66 + 14, toolY + 5);
 }
 
-function drawXY() {
+function drawXY(forceCache = false) {
   const canvas = $("xyCanvas");
   const ctx = canvas.getContext("2d");
   fitCanvas(canvas);
@@ -599,15 +730,35 @@ function drawXY() {
   const h = canvas.height;
   const a = state.analysis;
   const inf = a.inferred;
+  const cacheKey = `${w},${h},${state.xyMode},${inf.materialX},${inf.materialY},${inf.minX},${inf.maxX},${inf.minY},${inf.maxY},${a.segments.length},${quality.mode},${quality.lightweight}`;
+  const transform = xyTransform(w, h, inf);
+  if (forceCache || !xyCacheCanvas || xyCacheInfo !== cacheKey) {
+    xyCacheCanvas = document.createElement("canvas");
+    xyCacheCanvas.width = w;
+    xyCacheCanvas.height = h;
+    const cctx = xyCacheCanvas.getContext("2d");
+    drawXYStatic(cctx, w, h, a, inf, transform);
+    xyCacheInfo = cacheKey;
+    perf.lastDoneTrace = -1;
+  }
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(xyCacheCanvas, 0, 0);
+  drawXYDynamic(ctx, a, transform);
+}
+
+function xyTransform(w, h, inf) {
   const bounds = state.xyMode === "work"
     ? padBounds({ minX: inf.minX ?? 0, maxX: inf.maxX ?? inf.materialX, minY: inf.minY ?? 0, maxY: inf.maxY ?? inf.materialY }, 0.18)
     : { minX: 0, maxX: inf.materialX, minY: 0, maxY: inf.materialY };
   const pad = 18;
   const scale = Math.min((w - pad * 2) / Math.max(1, bounds.maxX - bounds.minX), (h - pad * 2) / Math.max(1, bounds.maxY - bounds.minY));
-  const px = (p) => ({ x: pad + (p.x - bounds.minX) * scale, y: h - pad - (p.y - bounds.minY) * scale });
+  return { pad, scale, bounds, h, px: (p) => ({ x: pad + (p.x - bounds.minX) * scale, y: h - pad - (p.y - bounds.minY) * scale }) };
+}
+
+function drawXYStatic(ctx, w, h, a, inf, transform) {
+  const px = transform.px;
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, w, h);
   const m0 = px({ x: 0, y: 0 });
   const m1 = px({ x: inf.materialX, y: inf.materialY });
   ctx.fillStyle = "#f8fafc";
@@ -623,24 +774,16 @@ function drawXY() {
   ctx.strokeRect(r0.x, r1.y, r1.x - r0.x, r0.y - r1.y);
   ctx.setLineDash([]);
   a.segments.forEach((seg, idx) => {
+    if ((quality.mode === "light" || quality.lightweight) && idx % 3 !== 0) return;
     const p0 = px(seg.from);
     const p1 = px(seg.to);
-    const done = idx <= state.index;
-    const active = idx === state.index;
-    const cutColor = ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
-    ctx.strokeStyle = done ? (seg.type === "G00" ? "#6b7280" : cutColor) : "#cbd5df";
-    ctx.lineWidth = idx === state.index ? 4 : 2;
+    ctx.strokeStyle = "#cbd5df";
+    ctx.lineWidth = 1.5;
     ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
     ctx.beginPath();
     ctx.moveTo(p0.x, p0.y);
     ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
-    if (active) {
-      ctx.fillStyle = "#dc2626";
-      ctx.beginPath();
-      ctx.arc(p1.x, p1.y, 5, 0, Math.PI * 2);
-      ctx.fill();
-    }
   });
   ctx.setLineDash([]);
   drawCross2d(ctx, px({ x: 0, y: 0 }), 10, "#111827");
@@ -666,11 +809,39 @@ function drawXY() {
     ctx.closePath();
     ctx.fill();
   });
+}
+
+function drawXYDynamic(ctx, a, transform) {
+  const px = transform.px;
+  const current = state.index;
+  const light = quality.lightweight || quality.mode === "light";
+  const drawEvery = light ? 4 : 1;
+  const start = light ? Math.max(0, current - 200) : 0;
+  for (let idx = start; idx <= current && idx < a.segments.length; idx += drawEvery) {
+    drawXYSegment(ctx, px, a.segments[idx], idx === current);
+  }
+  if (light && current % drawEvery !== 0 && a.segments[current]) {
+    drawXYSegment(ctx, px, a.segments[current], true);
+  }
+  ctx.setLineDash([]);
   const pos = px(currentPosition());
   ctx.fillStyle = "#dc2626";
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function drawXYSegment(ctx, px, seg, active) {
+  const p0 = px(seg.from);
+  const p1 = px(seg.to);
+  const cutColor = ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
+  ctx.strokeStyle = seg.type === "G00" ? "#6b7280" : cutColor;
+  ctx.lineWidth = active ? 4 : 2;
+  ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
+  ctx.beginPath();
+  ctx.moveTo(p0.x, p0.y);
+  ctx.lineTo(p1.x, p1.y);
+  ctx.stroke();
 }
 
 function drawCross2d(ctx, p, size, color) {
@@ -704,7 +875,8 @@ function updateTimeline() {
   const total = state.analysis.segments.length;
   $("timeline").max = Math.max(0, total - 1);
   $("timeline").value = state.index;
-  const elapsed = state.analysis.segments.slice(0, state.index).reduce((sum, s) => sum + s.duration, 0);
+  const block = state.analysis.motionBlocks[state.index];
+  const elapsed = block ? block.cumulativeTime : 0;
   $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
 }
 
@@ -754,6 +926,8 @@ function loadNc(text) {
   state.playing = false;
   state.analysis = analyzeNc(text);
   state.index = 0;
+  invalidateCanvasCaches();
+  ncWindowStart = -1;
   state.analysis.segments.forEach((s) => { s.playhead = 0; });
   updateCountLabels();
   $("viewerStatus").textContent = `${state.analysis.segments.length} motion blocks / ${state.analysis.rows.length} lines`;
@@ -762,6 +936,13 @@ function loadNc(text) {
   renderNcList();
   rebuildScene();
   updateToolAtIndex(0);
+}
+
+function invalidateCanvasCaches() {
+  xyCacheCanvas = null;
+  xyCacheInfo = null;
+  sectionCacheCanvas = null;
+  sectionCacheInfo = null;
 }
 
 function scheduleAnalyze() {
@@ -806,6 +987,17 @@ function bindEvents() {
   $("prevBtn").addEventListener("click", () => step(-1));
   $("nextBtn").addEventListener("click", () => step(1));
   $("speedSelect").addEventListener("change", () => { state.speed = Number($("speedSelect").value); });
+  $("lightModeToggle").addEventListener("change", () => {
+    quality.lightweight = $("lightModeToggle").checked;
+    invalidateCanvasCaches();
+    renderAllNow();
+  });
+  $("qualitySelect").addEventListener("change", () => {
+    quality.mode = $("qualitySelect").value;
+    quality.lightweight = quality.mode === "light" || $("lightModeToggle").checked;
+    invalidateCanvasCaches();
+    renderAllNow();
+  });
   $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
   $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
   $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
@@ -826,13 +1018,15 @@ function bindEvents() {
     state.xyMode = "material";
     $("xyMaterialBtn").classList.add("active");
     $("xyWorkBtn").classList.remove("active");
-    drawXY();
+    invalidateCanvasCaches();
+    drawXY(true);
   });
   $("xyWorkBtn").addEventListener("click", () => {
     state.xyMode = "work";
     $("xyWorkBtn").classList.add("active");
     $("xyMaterialBtn").classList.remove("active");
-    drawXY();
+    invalidateCanvasCaches();
+    drawXY(true);
   });
   $("fileInput").addEventListener("change", (event) => {
     readNcFile(event.target.files?.[0]);
