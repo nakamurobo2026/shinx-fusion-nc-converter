@@ -8,6 +8,7 @@ const state = {
   speed: 1,
   lastFrame: 0,
   xyMode: "work",
+  viewMode: "3d",
   playTime: 0,
   displayPos: null,
   xyView: { zoom: 1, panX: 0, panY: 0 },
@@ -46,13 +47,16 @@ let stockMesh;
 let rangeBox;
 let toolMesh;
 let pathGroup;
+let donePathGroup;
 let markerGroup;
+let referenceGroup;
 let animationId;
 let xyCacheCanvas;
 let xyCacheInfo = null;
 let sectionCacheCanvas;
 let sectionCacheInfo = null;
 let ncWindowStart = -1;
+let lastDone3dIndex = -1;
 
 function emptyAnalysis() {
   return {
@@ -347,35 +351,40 @@ function analyzeNc(text) {
 }
 
 async function initThree() {
-  const threeModule = await import("three");
+  const threeModule = await import("https://unpkg.com/three@0.165.0/build/three.module.js");
   const controlsModule = await import("https://unpkg.com/three@0.165.0/examples/jsm/controls/OrbitControls.js");
   THREE = threeModule;
   OrbitControls = controlsModule.OrbitControls;
   const host = $("threeViewport");
+  if (!host) return;
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x101820);
-  camera = new THREE.PerspectiveCamera(45, host.clientWidth / host.clientHeight, 0.1, 10000);
+  camera = new THREE.PerspectiveCamera(45, Math.max(1, host.clientWidth) / Math.max(1, host.clientHeight), 0.1, 10000);
   camera.position.set(360, -480, 320);
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
-  renderer.setSize(host.clientWidth, host.clientHeight);
+  renderer.setSize(Math.max(1, host.clientWidth), Math.max(1, host.clientHeight));
+  host.innerHTML = "";
   host.appendChild(renderer.domElement);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.target.set(150, 150, 20);
   controls.update();
+  controls.addEventListener("change", renderThreeScene);
   scene.add(new THREE.HemisphereLight(0xffffff, 0x2f3b45, 1.2));
   const dir = new THREE.DirectionalLight(0xffffff, 1.5);
   dir.position.set(200, -300, 500);
   scene.add(dir);
   scene.add(new THREE.GridHelper(600, 30, 0x52616d, 0x29343d));
   pathGroup = new THREE.Group();
+  donePathGroup = new THREE.Group();
   markerGroup = new THREE.Group();
-  scene.add(pathGroup, markerGroup);
+  referenceGroup = new THREE.Group();
+  scene.add(pathGroup, donePathGroup, markerGroup, referenceGroup);
   toolMesh = createToolMesh();
   scene.add(toolMesh);
   threeReady = true;
   if (state.analysis.segments.length) rebuildScene();
-  animate();
+  renderThreeScene();
 }
 
 function createToolMesh() {
@@ -387,11 +396,10 @@ function createToolMesh() {
   holder.rotation.x = Math.PI / 2;
   holder.position.z = 22;
   const tip = new THREE.Mesh(
-    new THREE.ConeGeometry(6, 20, 24),
+    new THREE.SphereGeometry(7, 24, 16),
     new THREE.MeshStandardMaterial({ color: 0x111827, metalness: 0.3, roughness: 0.4 })
   );
-  tip.rotation.x = Math.PI;
-  tip.position.z = -10;
+  tip.position.z = -12;
   group.add(holder, tip);
   return group;
 }
@@ -404,11 +412,11 @@ function clearGroup(group) {
   }
 }
 
-function lineObject(points, color, dashed = false) {
+function lineObject(points, color, dashed = false, opacity = 1) {
   const geometry = new THREE.BufferGeometry().setFromPoints(points);
   const material = dashed
-    ? new THREE.LineDashedMaterial({ color, dashSize: 6, gapSize: 4 })
-    : new THREE.LineBasicMaterial({ color });
+    ? new THREE.LineDashedMaterial({ color, dashSize: 6, gapSize: 4, transparent: opacity < 1, opacity })
+    : new THREE.LineBasicMaterial({ color, transparent: opacity < 1, opacity });
   const line = new THREE.Line(geometry, material);
   if (dashed) line.computeLineDistances();
   return line;
@@ -428,7 +436,10 @@ function rebuildScene() {
     rangeBox.material.dispose();
   }
   clearGroup(pathGroup);
+  clearGroup(donePathGroup);
   clearGroup(markerGroup);
+  clearGroup(referenceGroup);
+  lastDone3dIndex = -1;
 
   const inf = a.inferred;
   const stockGeo = new THREE.BoxGeometry(inf.materialX, inf.materialY, Math.max(1, inf.materialThickness));
@@ -446,21 +457,49 @@ function rebuildScene() {
 
   a.segments.forEach((seg) => {
     const color = seg.type === "G00" ? 0x9ca3af : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
-    pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00"));
+    pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00", 0.22));
   });
 
+  addReferenceLines(inf);
   addMarker(inf.workOrigin, 0x7c3aed, "cross");
   addMarker({ x: inf.machineOrigin.x, y: inf.machineOrigin.y, z: 0 }, 0xdc2626, "diamond");
   if (inf.start) addMarker(inf.start, 0x111827, "sphere", 5);
   if (inf.end) addMarker(inf.end, 0x111827, "box", 7);
   a.toolEvents.forEach((event) => addMarker(event, event.type === "P9000" ? 0xf59e0b : 0xdc2626, "cone", 7));
 
+  reset3dCamera();
+  updateToolAtIndex(0);
+}
+
+function addReferenceLines(inf) {
+  const maxX = Math.max(inf.materialX || 300, inf.maxX || 0, 300);
+  const maxY = Math.max(inf.materialY || 300, inf.maxY || 0, 300);
+  const zMax = Math.max(inf.safeZ || 80, inf.maxZ || 0, 80);
+  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(maxX, 0, 0)], 0xdc2626, false, 0.9));
+  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, maxY, 0)], 0x16a34a, false, 0.9));
+  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, zMax)], 0x2563eb, false, 0.9));
+  [inf.materialTopZ, inf.materialBottomZ, inf.safeZ, inf.approachZ].forEach((z, idx) => {
+    const colors = [0xffffff, 0xb45309, 0x0f766e, 0x2563eb];
+    const pts = [
+      new THREE.Vector3(0, 0, z),
+      new THREE.Vector3(maxX, 0, z),
+      new THREE.Vector3(maxX, maxY, z),
+      new THREE.Vector3(0, maxY, z),
+      new THREE.Vector3(0, 0, z),
+    ];
+    referenceGroup.add(lineObject(pts, colors[idx], true, 0.55));
+  });
+}
+
+function reset3dCamera() {
+  if (!threeReady || !controls || !camera) return;
+  const inf = state.analysis.inferred;
   const cx = (inf.materialX || 300) / 2;
   const cy = (inf.materialY || 300) / 2;
   controls.target.set(cx, cy, Math.max(20, (inf.materialThickness || 30) / 2));
-  camera.position.set(cx + 260, cy - 390, Math.max(240, (inf.safeZ || 80) + 170));
+  camera.position.set(cx + 300, cy - 430, Math.max(260, (inf.safeZ || 80) + 190));
   controls.update();
-  updateToolAtIndex(0);
+  renderThreeScene();
 }
 
 function vec(p) {
@@ -475,6 +514,43 @@ function addMarker(p, color, type, size = 6) {
   else mesh = new THREE.Mesh(new THREE.SphereGeometry(size, 18, 12), new THREE.MeshBasicMaterial({ color }));
   mesh.position.set(p.x || 0, p.y || 0, p.z || 0);
   markerGroup.add(mesh);
+}
+
+function updateThreeDonePath() {
+  if (!threeReady || !donePathGroup) return;
+  const current = state.index;
+  if (current < lastDone3dIndex) {
+    clearGroup(donePathGroup);
+    lastDone3dIndex = -1;
+  }
+  const light = quality.lightweight || quality.mode === "light";
+  const step = light ? 4 : 1;
+  for (let idx = lastDone3dIndex + 1; idx <= current && idx < state.analysis.segments.length; idx += step) {
+    const seg = state.analysis.segments[idx];
+    const color = seg.type === "G00" ? 0x6b7280 : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
+    donePathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00", 0.95));
+  }
+  lastDone3dIndex = current;
+}
+
+function updateThreeTool(pos) {
+  if (!threeReady || !toolMesh) return;
+  toolMesh.position.set(pos.x || 0, pos.y || 0, pos.z || 0);
+  updateThreeDonePath();
+}
+
+function renderThreeScene() {
+  if (!threeReady || !renderer || !camera || !$("threeViewport")) return;
+  if (state.viewMode === "2d") return;
+  const host = $("threeViewport");
+  const w = Math.max(1, host.clientWidth);
+  const h = Math.max(1, host.clientHeight);
+  if (renderer.domElement.width !== Math.round(w * renderer.getPixelRatio()) || renderer.domElement.height !== Math.round(h * renderer.getPixelRatio())) {
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+    renderer.setSize(w, h, false);
+  }
+  renderer.render(scene, camera);
 }
 
 function animate(time = 0) {
@@ -592,11 +668,13 @@ function renderAllNow() {
   const now = performance.now();
   const pos = currentPosition();
   if (toolMesh) toolMesh.position.set(pos.x, pos.y, pos.z);
+  updateThreeTool(pos);
   updateHud(pos);
   ncWindowStart = -1;
   renderNcList(true);
   drawSection(true);
   drawXY(true);
+  renderThreeScene();
   updateTimeline();
   perf.lastHud = now;
   perf.lastNc = now;
@@ -617,8 +695,10 @@ function throttledRender(now, playing) {
   }
   if (!playing || now - perf.lastCanvas >= canvasInterval) {
     const start = performance.now();
+    updateThreeTool(pos);
     drawXY(false);
     drawSection(false);
+    renderThreeScene();
     perf.drawMs = performance.now() - start;
     perf.lastCanvas = now;
   }
@@ -1095,7 +1175,7 @@ function startPlayback() {
 
 function saveLayout() {
   try {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode }));
   } catch {
     // localStorage may be disabled in some embedded browsers.
   }
@@ -1106,6 +1186,7 @@ function loadLayout() {
     const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
     state.layout = { ...state.layout, ...saved };
     if (saved.xyView) state.xyView = { ...state.xyView, ...saved.xyView };
+    if (saved.viewMode) state.viewMode = saved.viewMode;
   } catch {
     // Keep defaults.
   }
@@ -1120,15 +1201,21 @@ function applyLayout() {
   document.body.classList.toggle("z-hidden", state.layout.zHidden);
   document.body.classList.toggle("nc-hidden", state.layout.ncHidden);
   document.body.classList.toggle("xy-fullscreen", state.layout.xyFullscreen);
+  document.body.classList.toggle("view-2d", state.viewMode === "2d");
+  document.body.classList.toggle("view-3d", state.viewMode === "3d");
+  document.body.classList.toggle("view-split", state.viewMode === "split");
   $("fieldModeBtn").classList.toggle("active", state.layout.mode === "field");
   $("detailModeBtn").classList.toggle("active", state.layout.mode === "detail");
   $("toggleZBtn").textContent = state.layout.zHidden ? "表示" : "非表示";
   $("toggleNcBtn").textContent = state.layout.ncHidden ? "NC表示" : "NC非表示";
   $("xyFullscreenBtn").textContent = state.layout.xyFullscreen ? "戻る" : "全画面";
+  $("viewModeSelect").value = state.viewMode;
+  $("mainViewTitle").textContent = state.viewMode === "2d" ? "XY Motion" : state.viewMode === "split" ? "2D + 3D Motion" : "3D Motion";
   invalidateCanvasCaches();
   requestAnimationFrame(() => {
     drawXY(true);
     drawSection(true);
+    renderThreeScene();
   });
 }
 
@@ -1264,6 +1351,13 @@ function bindEvents() {
     invalidateCanvasCaches();
     renderAllNow();
   });
+  $("viewModeSelect").addEventListener("change", () => {
+    state.viewMode = $("viewModeSelect").value;
+    applyLayout();
+    saveLayout();
+    renderAllNow();
+  });
+  $("reset3dBtn").addEventListener("click", reset3dCamera);
   $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
   $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
   $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
@@ -1323,14 +1417,9 @@ function bindEvents() {
     drop.classList.remove("drag");
   }));
   window.addEventListener("resize", () => {
-    if (threeReady && camera && renderer) {
-      const host = $("threeViewport");
-      camera.aspect = host.clientWidth / host.clientHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(host.clientWidth, host.clientHeight);
-    }
     drawSection();
     drawXY();
+    renderThreeScene();
   });
 }
 
@@ -1345,4 +1434,7 @@ renderSafety();
 updateCountLabels();
 drawSection();
 drawXY();
+initThree().catch(() => {
+  $("viewerStatus").textContent = "3D初期化エラー";
+});
 animate();

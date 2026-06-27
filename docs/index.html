@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>SHINX Motion Viewer</title>
     <link rel="stylesheet" href="./style.css" />
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.165.0/build/three.module.js"
+        }
+      }
+    </script>
   </head>
   <body>
     <header class="topbar">
@@ -50,6 +57,11 @@
         <button id="detailModeBtn" class="mini" title="詳細モード">詳細</button>
         <label><input id="smoothModeToggle" type="checkbox" checked />滑らか</label>
         <label><input id="lightModeToggle" type="checkbox" />軽量再生</label>
+        <select id="viewModeSelect" title="表示モード">
+          <option value="2d">2D</option>
+          <option value="3d" selected>3D</option>
+          <option value="split">2D+3D</option>
+        </select>
         <select id="qualitySelect" title="プレビュー品質">
           <option value="high">高品質</option>
           <option value="standard" selected>標準</option>
@@ -68,14 +80,16 @@
     <main id="motionLayout" class="motion-layout">
       <section class="xy-main-panel">
         <div class="panel-title">
-          <h2>XY Motion</h2>
+          <h2 id="mainViewTitle">3D Motion</h2>
           <div id="viewerStatus" class="status">NC未読込</div>
           <div class="toggle-group">
             <button id="xyMaterialBtn" class="mini">材料全体</button>
             <button id="xyWorkBtn" class="mini active">加工範囲</button>
+            <button id="reset3dBtn" class="mini" title="3D視点リセット">視点</button>
             <button id="xyFullscreenBtn" class="mini" title="XY Motionだけ全画面">全画面</button>
           </div>
         </div>
+        <div id="threeViewport" class="three-viewport"></div>
         <canvas id="xyCanvas" width="1100" height="680"></canvas>
         <div class="hud">
           <div><span>X</span><strong id="hudX">0.000</strong></div>
