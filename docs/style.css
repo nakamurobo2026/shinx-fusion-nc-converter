@@ -400,6 +400,24 @@ button.mini {
   font-size: 12px;
 }
 
+.mini-check {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, .92);
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.mini-check input {
+  margin: 0;
+}
+
 .canvas-box {
   height: calc(100% - 22px);
   margin-top: 10px;

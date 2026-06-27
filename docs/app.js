@@ -9,6 +9,7 @@ const state = {
   lastFrame: 0,
   xyMode: "work",
   viewMode: "3d",
+  followTool: false,
   playTime: 0,
   displayPos: null,
   xyView: { zoom: 1, panX: 0, panY: 0 },
@@ -50,6 +51,7 @@ let pathGroup;
 let donePathGroup;
 let markerGroup;
 let referenceGroup;
+let dynamicGroup;
 let animationId;
 let xyCacheCanvas;
 let xyCacheInfo = null;
@@ -379,7 +381,8 @@ async function initThree() {
   donePathGroup = new THREE.Group();
   markerGroup = new THREE.Group();
   referenceGroup = new THREE.Group();
-  scene.add(pathGroup, donePathGroup, markerGroup, referenceGroup);
+  dynamicGroup = new THREE.Group();
+  scene.add(pathGroup, donePathGroup, markerGroup, referenceGroup, dynamicGroup);
   toolMesh = createToolMesh();
   scene.add(toolMesh);
   threeReady = true;
@@ -390,24 +393,26 @@ async function initThree() {
 function createToolMesh() {
   const group = new THREE.Group();
   const holder = new THREE.Mesh(
-    new THREE.CylinderGeometry(5, 5, 42, 20),
+    new THREE.CylinderGeometry(2.8, 2.8, 48, 20),
     new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.35, roughness: 0.35 })
   );
   holder.rotation.x = Math.PI / 2;
-  holder.position.z = 22;
+  holder.position.z = 24;
   const tip = new THREE.Mesh(
-    new THREE.SphereGeometry(7, 24, 16),
+    new THREE.SphereGeometry(6.5, 24, 16),
     new THREE.MeshStandardMaterial({ color: 0x111827, metalness: 0.3, roughness: 0.4 })
   );
-  tip.position.z = -12;
+  tip.position.z = 0;
   group.add(holder, tip);
   return group;
 }
 
 function clearGroup(group) {
+  if (!group) return;
   while (group.children.length) {
     const child = group.children.pop();
     child.geometry?.dispose?.();
+    if (child.material?.map) child.material.map.dispose();
     child.material?.dispose?.();
   }
 }
@@ -429,32 +434,22 @@ function rebuildScene() {
     scene.remove(stockMesh);
     stockMesh.geometry.dispose();
     stockMesh.material.dispose();
+    stockMesh = null;
   }
   if (rangeBox) {
     scene.remove(rangeBox);
     rangeBox.geometry.dispose();
     rangeBox.material.dispose();
+    rangeBox = null;
   }
   clearGroup(pathGroup);
   clearGroup(donePathGroup);
   clearGroup(markerGroup);
   clearGroup(referenceGroup);
+  clearGroup(dynamicGroup);
   lastDone3dIndex = -1;
 
   const inf = a.inferred;
-  const stockGeo = new THREE.BoxGeometry(inf.materialX, inf.materialY, Math.max(1, inf.materialThickness));
-  const stockMat = new THREE.MeshStandardMaterial({ color: 0x9fb6aa, transparent: true, opacity: 0.48, roughness: 0.7 });
-  stockMesh = new THREE.Mesh(stockGeo, stockMat);
-  stockMesh.position.set(inf.materialX / 2, inf.materialY / 2, inf.materialThickness / 2);
-  scene.add(stockMesh);
-
-  const box = new THREE.Box3(
-    new THREE.Vector3(inf.minX ?? 0, inf.minY ?? 0, inf.minZ ?? 0),
-    new THREE.Vector3(inf.maxX ?? 1, inf.maxY ?? 1, inf.maxZ ?? 1)
-  );
-  rangeBox = new THREE.Box3Helper(box, 0x9333ea);
-  scene.add(rangeBox);
-
   a.segments.forEach((seg) => {
     const color = seg.type === "G00" ? 0x9ca3af : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
     pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00", 0.22));
@@ -478,8 +473,16 @@ function addReferenceLines(inf) {
   referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(maxX, 0, 0)], 0xdc2626, false, 0.9));
   referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, maxY, 0)], 0x16a34a, false, 0.9));
   referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, zMax)], 0x2563eb, false, 0.9));
-  [inf.materialTopZ, inf.materialBottomZ, inf.safeZ, inf.approachZ].forEach((z, idx) => {
-    const colors = [0xffffff, 0xb45309, 0x0f766e, 0x2563eb];
+  referenceGroup.add(labelSprite("X", "#dc2626", { x: maxX + 18, y: 0, z: 0 }, 34));
+  referenceGroup.add(labelSprite("Y", "#16a34a", { x: 0, y: maxY + 18, z: 0 }, 34));
+  referenceGroup.add(labelSprite("Z", "#2563eb", { x: 0, y: 0, z: zMax + 14 }, 34));
+  referenceGroup.add(labelSprite("G92 X0 Y0", "#a78bfa", { x: 0, y: 0, z: Math.max(8, inf.materialTopZ || 0) }, 42));
+  [
+    ["MaterialTop", inf.materialTopZ, 0xffffff],
+    ["MaterialBottom", inf.materialBottomZ, 0xb45309],
+    ["SafeZ", inf.safeZ, 0x0f766e],
+    ["ApproachZ", inf.approachZ, 0x2563eb],
+  ].forEach(([label, z, color]) => {
     const pts = [
       new THREE.Vector3(0, 0, z),
       new THREE.Vector3(maxX, 0, z),
@@ -487,23 +490,66 @@ function addReferenceLines(inf) {
       new THREE.Vector3(0, maxY, z),
       new THREE.Vector3(0, 0, z),
     ];
-    referenceGroup.add(lineObject(pts, colors[idx], true, 0.55));
+    referenceGroup.add(lineObject(pts, color, true, 0.6));
+    referenceGroup.add(labelSprite(label, `#${color.toString(16).padStart(6, "0")}`, { x: maxX + 18, y: maxY, z }, 26));
   });
 }
 
 function reset3dCamera() {
+  set3dView("iso");
+}
+
+function set3dView(view) {
   if (!threeReady || !controls || !camera) return;
   const inf = state.analysis.inferred;
   const cx = (inf.materialX || 300) / 2;
   const cy = (inf.materialY || 300) / 2;
-  controls.target.set(cx, cy, Math.max(20, (inf.materialThickness || 30) / 2));
-  camera.position.set(cx + 300, cy - 430, Math.max(260, (inf.safeZ || 80) + 190));
+  const cz = Math.max(20, (inf.materialThickness || 30) / 2);
+  const span = Math.max(inf.materialX || 300, inf.materialY || 300, (inf.safeZ || 80) * 2, 300);
+  controls.target.set(cx, cy, cz);
+  camera.up.set(0, 0, 1);
+  if (view === "top") {
+    camera.up.set(0, 1, 0);
+    camera.position.set(cx, cy, Math.max(320, span * 1.45));
+  } else if (view === "front") {
+    camera.position.set(cx, -span * 1.45, cz + span * 0.25);
+  } else if (view === "side") {
+    camera.position.set(span * 1.45, cy, cz + span * 0.25);
+  } else {
+    camera.position.set(cx + span * 0.9, cy - span * 1.15, cz + Math.max(260, span * 0.75));
+  }
   controls.update();
   renderThreeScene();
 }
 
 function vec(p) {
   return new THREE.Vector3(p.x || 0, p.y || 0, p.z || 0);
+}
+
+function labelSprite(text, color, p, size = 32) {
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+  const font = "700 28px Segoe UI";
+  ctx.font = font;
+  const width = Math.ceil(ctx.measureText(text).width + 28);
+  canvas.width = Math.max(96, width);
+  canvas.height = 48;
+  ctx.font = font;
+  ctx.fillStyle = "rgba(16, 24, 32, .72)";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.strokeRect(1.5, 1.5, canvas.width - 3, canvas.height - 3);
+  ctx.fillStyle = color;
+  ctx.textBaseline = "middle";
+  ctx.fillText(text, 14, canvas.height / 2 + 1);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(material);
+  sprite.position.set(p.x || 0, p.y || 0, p.z || 0);
+  sprite.scale.set(size * (canvas.width / canvas.height), size, 1);
+  return sprite;
 }
 
 function addMarker(p, color, type, size = 6) {
@@ -537,6 +583,31 @@ function updateThreeTool(pos) {
   if (!threeReady || !toolMesh) return;
   toolMesh.position.set(pos.x || 0, pos.y || 0, pos.z || 0);
   updateThreeDonePath();
+  updateThreeDynamicGuides(pos);
+  if (state.followTool && controls) {
+    controls.target.set(pos.x || 0, pos.y || 0, pos.z || 0);
+    controls.update();
+  }
+}
+
+function updateThreeDynamicGuides(pos) {
+  if (!threeReady || !dynamicGroup) return;
+  clearGroup(dynamicGroup);
+  const x = pos.x || 0;
+  const y = pos.y || 0;
+  const z = pos.z || 0;
+  dynamicGroup.add(lineObject([new THREE.Vector3(x, y, 0), new THREE.Vector3(x, y, z)], 0xfbbf24, true, 0.9));
+  dynamicGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(8, 24, 16),
+    new THREE.MeshBasicMaterial({ color: 0xef4444 })
+  ));
+  dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, z);
+  dynamicGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(4, 16, 10),
+    new THREE.MeshBasicMaterial({ color: 0xfbbf24 })
+  ));
+  dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, 0);
+  dynamicGroup.add(labelSprite(`X${fmt(x)} Y${fmt(y)} Z${fmt(z)}`, "#fbbf24", { x: x + 18, y: y + 18, z: z + 18 }, 30));
 }
 
 function renderThreeScene() {
@@ -1175,7 +1246,7 @@ function startPlayback() {
 
 function saveLayout() {
   try {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode, followTool: state.followTool }));
   } catch {
     // localStorage may be disabled in some embedded browsers.
   }
@@ -1187,6 +1258,7 @@ function loadLayout() {
     state.layout = { ...state.layout, ...saved };
     if (saved.xyView) state.xyView = { ...state.xyView, ...saved.xyView };
     if (saved.viewMode) state.viewMode = saved.viewMode;
+    if (typeof saved.followTool === "boolean") state.followTool = saved.followTool;
   } catch {
     // Keep defaults.
   }
@@ -1210,6 +1282,7 @@ function applyLayout() {
   $("toggleNcBtn").textContent = state.layout.ncHidden ? "NC表示" : "NC非表示";
   $("xyFullscreenBtn").textContent = state.layout.xyFullscreen ? "戻る" : "全画面";
   $("viewModeSelect").value = state.viewMode;
+  $("followToolToggle").checked = state.followTool;
   $("mainViewTitle").textContent = state.viewMode === "2d" ? "XY Motion" : state.viewMode === "split" ? "2D + 3D Motion" : "3D Motion";
   invalidateCanvasCaches();
   requestAnimationFrame(() => {
@@ -1358,6 +1431,15 @@ function bindEvents() {
     renderAllNow();
   });
   $("reset3dBtn").addEventListener("click", reset3dCamera);
+  $("viewTopBtn").addEventListener("click", () => set3dView("top"));
+  $("viewFrontBtn").addEventListener("click", () => set3dView("front"));
+  $("viewSideBtn").addEventListener("click", () => set3dView("side"));
+  $("viewIsoBtn").addEventListener("click", () => set3dView("iso"));
+  $("followToolToggle").addEventListener("change", () => {
+    state.followTool = $("followToolToggle").checked;
+    saveLayout();
+    renderAllNow();
+  });
   $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
   $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
   $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
