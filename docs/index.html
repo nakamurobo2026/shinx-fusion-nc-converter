@@ -46,6 +46,9 @@
       </div>
 
       <div class="perfbar">
+        <button id="fieldModeBtn" class="mini active" title="現場モード">現場</button>
+        <button id="detailModeBtn" class="mini" title="詳細モード">詳細</button>
+        <label><input id="smoothModeToggle" type="checkbox" checked />滑らか</label>
         <label><input id="lightModeToggle" type="checkbox" />軽量再生</label>
         <select id="qualitySelect" title="プレビュー品質">
           <option value="high">高品質</option>
@@ -62,7 +65,7 @@
       </div>
     </header>
 
-    <main class="motion-layout">
+    <main id="motionLayout" class="motion-layout">
       <section class="xy-main-panel">
         <div class="panel-title">
           <h2>XY Motion</h2>
@@ -70,6 +73,7 @@
           <div class="toggle-group">
             <button id="xyMaterialBtn" class="mini">材料全体</button>
             <button id="xyWorkBtn" class="mini active">加工範囲</button>
+            <button id="xyFullscreenBtn" class="mini" title="XY Motionだけ全画面">全画面</button>
           </div>
         </div>
         <canvas id="xyCanvas" width="1100" height="680"></canvas>
@@ -83,9 +87,14 @@
         </div>
       </section>
 
+      <div id="sideResizer" class="side-resizer" title="ドラッグで右パネル幅を変更"></div>
+
       <aside class="right-panel">
         <section class="section-panel">
-          <h2>断面 Z</h2>
+          <div class="section-head">
+            <h2>断面 Z</h2>
+            <button id="toggleZBtn" class="mini">非表示</button>
+          </div>
           <div class="canvas-box">
             <canvas id="sectionCanvas" width="360" height="320"></canvas>
           </div>
@@ -103,11 +112,14 @@
         </section>
       </aside>
 
+      <div id="bottomResizer" class="bottom-resizer" title="ドラッグでNC表示高さを変更"></div>
+
       <section class="bottom-panel">
         <div class="timeline-wrap">
           <input id="timeline" type="range" min="0" max="0" value="0" />
           <span id="timeLabel">00:00 / 00:00</span>
           <span id="bottomCountLabel">0 motion blocks / 0 NC lines</span>
+          <button id="toggleNcBtn" class="mini">NC非表示</button>
         </div>
         <div class="nc-area">
           <textarea id="ncInput" spellcheck="false" placeholder="SHINX専用ポストから出力したNCコードを貼り付け"></textarea>

@@ -8,6 +8,11 @@ const state = {
   speed: 1,
   lastFrame: 0,
   xyMode: "work",
+  playTime: 0,
+  displayPos: null,
+  xyView: { zoom: 1, panX: 0, panY: 0 },
+  xyUserView: false,
+  layout: { mode: "field", zHidden: false, ncHidden: false, xyFullscreen: false, sideWidth: 320, bottomHeight: 210 },
 };
 
 const perf = {
@@ -25,7 +30,10 @@ const perf = {
 const quality = {
   mode: "standard",
   lightweight: false,
+  smooth: true,
 };
+
+const LAYOUT_KEY = "shinxMotionViewerLayoutV2";
 
 let scene;
 let camera;
@@ -472,12 +480,12 @@ function addMarker(p, color, type, size = 6) {
 function animate(time = 0) {
   animationId = requestAnimationFrame(animate);
   updateFps(time);
-  state.lastFrame = time;
   if (state.playing && state.analysis.segments.length) {
-    advancePlayback(playbackBlockStep());
+    advancePlayback(time);
   } else {
     throttledRender(time, false);
   }
+  state.lastFrame = time;
 }
 
 function playbackBlockStep() {
@@ -485,17 +493,41 @@ function playbackBlockStep() {
   return Math.max(1, Math.trunc(Number($("speedSelect").value) || 1));
 }
 
-function advancePlayback(blocks) {
+function advancePlayback(now) {
   if (!state.analysis.segments.length) return;
-  const next = Math.min(state.analysis.segments.length - 1, state.index + blocks);
-  state.index = next;
-  if (state.index >= state.analysis.segments.length - 1) {
+  const speedValue = $("speedSelect").value;
+  const light = quality.lightweight || quality.mode === "light";
+  const useSmooth = quality.smooth && !light && speedValue !== "max";
+  if (!useSmooth) {
+    const next = Math.min(state.analysis.segments.length - 1, state.index + playbackBlockStep());
+    state.index = next;
+    state.displayPos = null;
+    state.playTime = state.analysis.segments[next]?.endTime ?? state.playTime;
+    if (state.index >= state.analysis.segments.length - 1) state.playing = false;
+    throttledRender(now, true);
+    return;
+  }
+  const dt = Math.max(0, Math.min(150, now - (state.lastFrame || now))) / 1000;
+  const speed = Math.max(0.1, Number(speedValue) || 1);
+  state.playTime += dt * speed;
+  const total = state.analysis.inferred.timeSeconds || 0;
+  if (state.playTime >= total) {
+    state.playTime = total;
+    state.index = state.analysis.segments.length - 1;
+    state.displayPos = null;
     state.playing = false;
+  } else {
+    const seg = segmentAtTime(state.playTime);
+    if (seg) {
+      state.index = seg.index;
+      state.displayPos = interpolateSegment(seg, state.playTime);
+    }
   }
   throttledRender(performance.now(), true);
 }
 
 function currentPosition() {
+  if (state.displayPos) return state.displayPos;
   const seg = state.analysis.segments[state.index];
   if (!seg) return { x: 0, y: 0, z: 0, f: null, s: null, t: null, line: null };
   return {
@@ -506,14 +538,49 @@ function currentPosition() {
   };
 }
 
+function segmentAtTime(seconds) {
+  const segments = state.analysis.segments;
+  let lo = 0;
+  let hi = segments.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const seg = segments[mid];
+    if (seconds < seg.startTime) hi = mid - 1;
+    else if (seconds > seg.endTime) lo = mid + 1;
+    else return seg;
+  }
+  return segments[Math.max(0, Math.min(segments.length - 1, lo))];
+}
+
+function interpolateSegment(seg, seconds) {
+  const ratio = Math.max(0, Math.min(1, (seconds - seg.startTime) / Math.max(0.001, seg.duration)));
+  const lerp = (a, b) => a + (b - a) * ratio;
+  return {
+    x: lerp(seg.from.x, seg.to.x),
+    y: lerp(seg.from.y, seg.to.y),
+    z: lerp(seg.from.z, seg.to.z),
+    f: seg.f,
+    s: seg.s,
+    t: seg.t,
+    line: seg.line,
+    nNumber: seg.nNumber,
+    segment: seg,
+    ratio,
+  };
+}
+
 function updateToolAtIndex(index) {
   if (!state.analysis.segments.length) {
     state.index = 0;
+    state.displayPos = null;
+    state.playTime = 0;
     updateHud(currentPosition());
     updateTimeline();
     return;
   }
   state.index = Math.max(0, Math.min(index, state.analysis.segments.length - 1));
+  state.displayPos = null;
+  state.playTime = state.analysis.segments[state.index]?.startTime ?? 0;
   renderAllNow();
 }
 
@@ -730,7 +797,7 @@ function drawXY(forceCache = false) {
   const h = canvas.height;
   const a = state.analysis;
   const inf = a.inferred;
-  const cacheKey = `${w},${h},${state.xyMode},${inf.materialX},${inf.materialY},${inf.minX},${inf.maxX},${inf.minY},${inf.maxY},${a.segments.length},${quality.mode},${quality.lightweight}`;
+  const cacheKey = `${w},${h},${state.xyMode},${state.xyView.zoom},${state.xyView.panX},${state.xyView.panY},${inf.materialX},${inf.materialY},${inf.minX},${inf.maxX},${inf.minY},${inf.maxY},${a.segments.length},${quality.mode},${quality.lightweight}`;
   const transform = xyTransform(w, h, inf);
   if (forceCache || !xyCacheCanvas || xyCacheInfo !== cacheKey) {
     xyCacheCanvas = document.createElement("canvas");
@@ -751,8 +818,11 @@ function xyTransform(w, h, inf) {
     ? padBounds({ minX: inf.minX ?? 0, maxX: inf.maxX ?? inf.materialX, minY: inf.minY ?? 0, maxY: inf.maxY ?? inf.materialY }, 0.18)
     : { minX: 0, maxX: inf.materialX, minY: 0, maxY: inf.materialY };
   const pad = 18;
-  const scale = Math.min((w - pad * 2) / Math.max(1, bounds.maxX - bounds.minX), (h - pad * 2) / Math.max(1, bounds.maxY - bounds.minY));
-  return { pad, scale, bounds, h, px: (p) => ({ x: pad + (p.x - bounds.minX) * scale, y: h - pad - (p.y - bounds.minY) * scale }) };
+  const baseScale = Math.min((w - pad * 2) / Math.max(1, bounds.maxX - bounds.minX), (h - pad * 2) / Math.max(1, bounds.maxY - bounds.minY));
+  const scale = baseScale * state.xyView.zoom;
+  const baseX = pad + state.xyView.panX;
+  const baseY = h - pad + state.xyView.panY;
+  return { pad, scale, bounds, h, px: (p) => ({ x: baseX + (p.x - bounds.minX) * scale, y: baseY - (p.y - bounds.minY) * scale }) };
 }
 
 function drawXYStatic(ctx, w, h, a, inf, transform) {
@@ -824,11 +894,16 @@ function drawXYDynamic(ctx, a, transform) {
     drawXYSegment(ctx, px, a.segments[current], true);
   }
   ctx.setLineDash([]);
-  const pos = px(currentPosition());
+  const currentPos = currentPosition();
+  const pos = px(currentPos);
+  drawDirectionArrow(ctx, px, currentPos);
   ctx.fillStyle = "#dc2626";
   ctx.beginPath();
-  ctx.arc(pos.x, pos.y, 6, 0, Math.PI * 2);
+  ctx.arc(pos.x, pos.y, 9, 0, Math.PI * 2);
   ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 2;
+  ctx.stroke();
 }
 
 function drawXYSegment(ctx, px, seg, active) {
@@ -842,6 +917,30 @@ function drawXYSegment(ctx, px, seg, active) {
   ctx.moveTo(p0.x, p0.y);
   ctx.lineTo(p1.x, p1.y);
   ctx.stroke();
+}
+
+function drawDirectionArrow(ctx, px, pos) {
+  const seg = pos.segment || state.analysis.segments[state.index];
+  if (!seg) return;
+  const p0 = px(seg.from);
+  const p1 = px(seg.to);
+  const angle = Math.atan2(p1.y - p0.y, p1.x - p0.x);
+  if (!Number.isFinite(angle) || Math.hypot(p1.x - p0.x, p1.y - p0.y) < 2) return;
+  const tip = px(pos);
+  const size = 18;
+  ctx.strokeStyle = "#dc2626";
+  ctx.fillStyle = "#dc2626";
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(tip.x - Math.cos(angle) * size, tip.y - Math.sin(angle) * size);
+  ctx.lineTo(tip.x, tip.y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(tip.x, tip.y);
+  ctx.lineTo(tip.x - Math.cos(angle - 0.55) * 10, tip.y - Math.sin(angle - 0.55) * 10);
+  ctx.lineTo(tip.x - Math.cos(angle + 0.55) * 10, tip.y - Math.sin(angle + 0.55) * 10);
+  ctx.closePath();
+  ctx.fill();
 }
 
 function drawCross2d(ctx, p, size, color) {
@@ -876,7 +975,7 @@ function updateTimeline() {
   $("timeline").max = Math.max(0, total - 1);
   $("timeline").value = state.index;
   const block = state.analysis.motionBlocks[state.index];
-  const elapsed = block ? block.cumulativeTime : 0;
+  const elapsed = state.playing && quality.smooth ? state.playTime : block ? block.cumulativeTime : 0;
   $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
 }
 
@@ -926,6 +1025,8 @@ function loadNc(text) {
   state.playing = false;
   state.analysis = analyzeNc(text);
   state.index = 0;
+  state.playTime = 0;
+  state.displayPos = null;
   invalidateCanvasCaches();
   ncWindowStart = -1;
   state.analysis.segments.forEach((s) => { s.playhead = 0; });
@@ -979,14 +1080,179 @@ function step(delta) {
   jumpToIndex(state.index + delta);
 }
 
+function startPlayback() {
+  if (!state.analysis.segments.length) return;
+  if (state.index >= state.analysis.segments.length - 1) {
+    state.index = 0;
+    state.playTime = 0;
+  } else {
+    state.playTime = state.displayPos ? state.playTime : state.analysis.segments[state.index]?.startTime ?? 0;
+  }
+  state.displayPos = null;
+  state.lastFrame = 0;
+  state.playing = true;
+}
+
+function saveLayout() {
+  try {
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView }));
+  } catch {
+    // localStorage may be disabled in some embedded browsers.
+  }
+}
+
+function loadLayout() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) || "{}");
+    state.layout = { ...state.layout, ...saved };
+    if (saved.xyView) state.xyView = { ...state.xyView, ...saved.xyView };
+  } catch {
+    // Keep defaults.
+  }
+  applyLayout();
+}
+
+function applyLayout() {
+  document.documentElement.style.setProperty("--side-width", `${state.layout.sideWidth}px`);
+  document.documentElement.style.setProperty("--bottom-height", `${state.layout.bottomHeight}px`);
+  document.body.classList.toggle("field-mode", state.layout.mode === "field");
+  document.body.classList.toggle("detail-mode", state.layout.mode === "detail");
+  document.body.classList.toggle("z-hidden", state.layout.zHidden);
+  document.body.classList.toggle("nc-hidden", state.layout.ncHidden);
+  document.body.classList.toggle("xy-fullscreen", state.layout.xyFullscreen);
+  $("fieldModeBtn").classList.toggle("active", state.layout.mode === "field");
+  $("detailModeBtn").classList.toggle("active", state.layout.mode === "detail");
+  $("toggleZBtn").textContent = state.layout.zHidden ? "表示" : "非表示";
+  $("toggleNcBtn").textContent = state.layout.ncHidden ? "NC表示" : "NC非表示";
+  $("xyFullscreenBtn").textContent = state.layout.xyFullscreen ? "戻る" : "全画面";
+  invalidateCanvasCaches();
+  requestAnimationFrame(() => {
+    drawXY(true);
+    drawSection(true);
+  });
+}
+
+function setLayoutMode(mode) {
+  state.layout.mode = mode;
+  if (mode === "field") {
+    state.layout.sideWidth = Math.min(state.layout.sideWidth || 320, 340);
+    state.layout.bottomHeight = Math.min(state.layout.bottomHeight || 210, 220);
+  } else {
+    state.layout.sideWidth = Math.max(state.layout.sideWidth || 420, 420);
+    state.layout.bottomHeight = Math.max(state.layout.bottomHeight || 320, 320);
+  }
+  applyLayout();
+  saveLayout();
+}
+
+function makeResizer(handle, onDrag) {
+  let active = false;
+  handle.addEventListener("pointerdown", (event) => {
+    active = true;
+    handle.setPointerCapture(event.pointerId);
+    event.preventDefault();
+  });
+  handle.addEventListener("pointermove", (event) => {
+    if (!active) return;
+    onDrag(event);
+    applyLayout();
+  });
+  handle.addEventListener("pointerup", (event) => {
+    if (!active) return;
+    active = false;
+    handle.releasePointerCapture(event.pointerId);
+    saveLayout();
+  });
+}
+
+function bindLayoutControls() {
+  $("fieldModeBtn").addEventListener("click", () => setLayoutMode("field"));
+  $("detailModeBtn").addEventListener("click", () => setLayoutMode("detail"));
+  $("toggleZBtn").addEventListener("click", () => {
+    state.layout.zHidden = !state.layout.zHidden;
+    applyLayout();
+    saveLayout();
+  });
+  $("toggleNcBtn").addEventListener("click", () => {
+    state.layout.ncHidden = !state.layout.ncHidden;
+    applyLayout();
+    saveLayout();
+  });
+  $("xyFullscreenBtn").addEventListener("click", () => {
+    state.layout.xyFullscreen = !state.layout.xyFullscreen;
+    applyLayout();
+    saveLayout();
+  });
+  makeResizer($("sideResizer"), (event) => {
+    const rect = $("motionLayout").getBoundingClientRect();
+    state.layout.sideWidth = Math.max(240, Math.min(560, rect.right - event.clientX - 10));
+  });
+  makeResizer($("bottomResizer"), (event) => {
+    const rect = $("motionLayout").getBoundingClientRect();
+    state.layout.bottomHeight = Math.max(80, Math.min(460, rect.bottom - event.clientY - 10));
+  });
+}
+
+function bindXyPointerControls() {
+  const canvas = $("xyCanvas");
+  let drag = null;
+  canvas.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const oldZoom = state.xyView.zoom;
+    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const nextZoom = Math.max(0.35, Math.min(12, oldZoom * factor));
+    const ratio = nextZoom / oldZoom;
+    state.xyView.panX = x - (x - state.xyView.panX) * ratio;
+    state.xyView.panY = y - (y - state.xyView.panY) * ratio;
+    state.xyView.zoom = nextZoom;
+    state.xyUserView = true;
+    invalidateCanvasCaches();
+    drawXY(true);
+    saveLayout();
+  }, { passive: false });
+  canvas.addEventListener("pointerdown", (event) => {
+    drag = { x: event.clientX, y: event.clientY, panX: state.xyView.panX, panY: state.xyView.panY };
+    canvas.setPointerCapture(event.pointerId);
+  });
+  canvas.addEventListener("pointermove", (event) => {
+    if (!drag) return;
+    state.xyView.panX = drag.panX + event.clientX - drag.x;
+    state.xyView.panY = drag.panY + event.clientY - drag.y;
+    state.xyUserView = true;
+    invalidateCanvasCaches();
+    drawXY(true);
+  });
+  canvas.addEventListener("pointerup", (event) => {
+    if (!drag) return;
+    drag = null;
+    canvas.releasePointerCapture(event.pointerId);
+    saveLayout();
+  });
+  canvas.addEventListener("dblclick", () => {
+    state.xyView = { zoom: 1, panX: 0, panY: 0 };
+    state.xyUserView = false;
+    invalidateCanvasCaches();
+    drawXY(true);
+    saveLayout();
+  });
+}
+
 function bindEvents() {
   $("filePickBtn").addEventListener("click", () => $("fileInput").click());
-  $("playBtn").addEventListener("click", () => { state.playing = true; });
-  $("pauseBtn").addEventListener("click", () => { state.playing = false; });
-  $("stopBtn").addEventListener("click", () => { state.playing = false; jumpToIndex(0); });
+  $("playBtn").addEventListener("click", startPlayback);
+  $("pauseBtn").addEventListener("click", () => { state.playing = false; renderAllNow(); });
+  $("stopBtn").addEventListener("click", () => { state.playing = false; state.displayPos = null; jumpToIndex(0); });
   $("prevBtn").addEventListener("click", () => step(-1));
   $("nextBtn").addEventListener("click", () => step(1));
   $("speedSelect").addEventListener("change", () => { state.speed = Number($("speedSelect").value); });
+  $("smoothModeToggle").addEventListener("change", () => {
+    quality.smooth = $("smoothModeToggle").checked;
+    state.displayPos = null;
+    renderAllNow();
+  });
   $("lightModeToggle").addEventListener("change", () => {
     quality.lightweight = $("lightModeToggle").checked;
     invalidateCanvasCaches();
@@ -1028,6 +1294,8 @@ function bindEvents() {
     invalidateCanvasCaches();
     drawXY(true);
   });
+  bindXyPointerControls();
+  bindLayoutControls();
   $("fileInput").addEventListener("change", (event) => {
     readNcFile(event.target.files?.[0]);
     event.target.value = "";
@@ -1071,6 +1339,7 @@ function escapeHtml(value) {
 }
 
 bindEvents();
+loadLayout();
 renderSummary();
 renderSafety();
 updateCountLabels();

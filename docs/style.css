@@ -13,6 +13,8 @@
   --warn: #b45309;
   --danger: #b91c1c;
   --ok: #15803d;
+  --side-width: 320px;
+  --bottom-height: 210px;
 }
 
 * { box-sizing: border-box; }
@@ -29,7 +31,7 @@ body {
 .topbar {
   height: 78px;
   display: grid;
-  grid-template-columns: minmax(210px, .9fr) 180px auto auto 230px 190px;
+  grid-template-columns: minmax(190px, .8fr) 170px auto auto minmax(360px, auto) 180px;
   align-items: center;
   gap: 14px;
   padding: 10px 16px;
@@ -114,7 +116,7 @@ button:hover, button.active {
 
 .perfbar {
   display: grid;
-  grid-template-columns: auto 84px minmax(90px, 1fr);
+  grid-template-columns: auto auto auto auto 84px minmax(86px, 1fr);
   align-items: center;
   gap: 7px;
   color: var(--muted);
@@ -182,8 +184,8 @@ button:hover, button.active {
 .motion-layout {
   height: calc(100vh - 78px);
   display: grid;
-  grid-template-columns: minmax(680px, 1fr) 360px;
-  grid-template-rows: minmax(0, 1fr) 240px;
+  grid-template-columns: minmax(620px, 1fr) 8px var(--side-width);
+  grid-template-rows: minmax(0, 1fr) 8px var(--bottom-height);
   gap: 10px;
   padding: 10px;
 }
@@ -200,6 +202,8 @@ button:hover, button.active {
   overflow: hidden;
   border: 1px solid var(--line);
   background: #ffffff;
+  grid-column: 1 / 2;
+  grid-row: 1 / 2;
 }
 
 .panel-title {
@@ -231,6 +235,12 @@ button:hover, button.active {
   width: 100%;
   height: 100%;
   background: #fff;
+  cursor: grab;
+  touch-action: none;
+}
+
+.xy-main-panel canvas:active {
+  cursor: grabbing;
 }
 
 .hud {
@@ -264,11 +274,38 @@ button:hover, button.active {
 }
 
 .right-panel {
+  grid-column: 3 / 4;
   grid-row: 1 / 2;
   display: grid;
-  grid-template-rows: minmax(320px, 1fr) auto minmax(120px, auto);
+  grid-template-rows: minmax(150px, .7fr) auto minmax(120px, auto);
   gap: 10px;
   overflow: hidden;
+}
+
+.side-resizer {
+  grid-column: 2 / 3;
+  grid-row: 1 / 2;
+  cursor: col-resize;
+  border-radius: 999px;
+}
+
+.side-resizer:hover,
+.bottom-resizer:hover {
+  background: #b7c8d4;
+}
+
+.bottom-resizer {
+  grid-column: 1 / 4;
+  grid-row: 2 / 3;
+  cursor: row-resize;
+  border-radius: 999px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .summary-panel,
@@ -376,7 +413,8 @@ canvas {
 }
 
 .bottom-panel {
-  grid-column: 1 / 3;
+  grid-column: 1 / 4;
+  grid-row: 3 / 4;
   display: grid;
   grid-template-rows: 38px minmax(0, 1fr);
   border: 1px solid var(--line);
@@ -385,11 +423,68 @@ canvas {
 
 .timeline-wrap {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 190px;
+  grid-template-columns: minmax(0, 1fr) 120px 190px 80px;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--line);
+}
+
+body.z-hidden .section-panel {
+  min-height: 48px;
+}
+
+body.z-hidden .section-panel .canvas-box {
+  display: none;
+}
+
+body.z-hidden .right-panel {
+  grid-template-rows: 48px auto minmax(130px, 1fr);
+}
+
+body.nc-hidden {
+  --bottom-height: 38px;
+}
+
+body.nc-hidden .nc-area {
+  display: none;
+}
+
+body.xy-fullscreen .topbar,
+body.xy-fullscreen .right-panel,
+body.xy-fullscreen .side-resizer,
+body.xy-fullscreen .bottom-panel,
+body.xy-fullscreen .bottom-resizer {
+  display: none;
+}
+
+body.xy-fullscreen .motion-layout {
+  height: 100vh;
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+  padding: 0;
+}
+
+body.xy-fullscreen .xy-main-panel {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+body.detail-mode {
+  --side-width: 420px;
+  --bottom-height: 320px;
+}
+
+body.detail-mode .right-panel {
+  grid-template-rows: minmax(220px, 1fr) auto minmax(150px, auto);
+}
+
+body.field-mode .hud strong {
+  font-size: 22px;
+}
+
+body.field-mode .bottom-panel {
+  font-size: 12px;
 }
 
 .timeline-wrap input {
@@ -481,11 +576,15 @@ textarea {
   .motion-layout {
     height: auto;
     grid-template-columns: 1fr;
-    grid-template-rows: 70vh auto 300px;
+    grid-template-rows: 70vh auto 8px 300px;
   }
   .right-panel,
   .bottom-panel {
     grid-column: auto;
     grid-row: auto;
+  }
+  .side-resizer,
+  .bottom-resizer {
+    display: none;
   }
 }
