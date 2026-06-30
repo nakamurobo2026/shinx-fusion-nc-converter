@@ -7,6 +7,7 @@ const state = {
   playing: false,
   speed: 1,
   lastFrame: 0,
+  activeLineOverride: null,
   xyMode: "work",
   viewMode: "3d",
   followTool: false,
@@ -15,6 +16,7 @@ const state = {
   xyView: { zoom: 1, panX: 0, panY: 0 },
   xyUserView: false,
   layout: { mode: "field", zHidden: false, ncHidden: false, xyFullscreen: false, sideWidth: 320, bottomHeight: 210 },
+  threeOptions: { labels: false, axis: true, safeZ: true, origin: true, coords: false },
 };
 
 const perf = {
@@ -68,6 +70,7 @@ function emptyAnalysis() {
     motionBlocks: [],
     tools: [],
     toolEvents: [],
+    important: {},
     safety: [],
     inferred: {
       face: "8面",
@@ -115,6 +118,18 @@ function analyzeNc(text) {
   const motionRows = [];
   const segments = [];
   const toolEvents = [];
+  const important = {
+    g92: [],
+    tool: [],
+    spindleOn: [],
+    spindleStop: [],
+    materialTop: [],
+    minZ: [],
+    zDown: [],
+    lowRapid: [],
+    modeSwitch: [],
+    warning: [],
+  };
   const safety = [];
   const toolMap = new Map();
   const stateNc = {
@@ -145,6 +160,10 @@ function analyzeNc(text) {
   let activeMotionIndex = -1;
 
   const addSafety = (level, line, message) => safety.push({ level, line, message });
+  const addPoint = (type, item) => {
+    if (!important[type]) important[type] = [];
+    important[type].push(item);
+  };
   const toolInfo = () => {
     const key = stateNc.tool || stateNc.t || "未取得";
     if (!toolMap.has(key)) {
@@ -185,7 +204,11 @@ function analyzeNc(text) {
         const code = Math.trunc(value);
         if ([0, 1, 2, 3].includes(code)) stateNc.motion = gName(code);
         else if (code === 4) isDwell = true;
-        else if (code === 90 || code === 91) stateNc.mode = `G${code}`;
+        else if (code === 90 || code === 91) {
+          const nextMode = `G${code}`;
+          if (stateNc.mode !== nextMode) addPoint("modeSwitch", { line, label: `${nextMode}切替`, motionIndex: null });
+          stateNc.mode = nextMode;
+        }
         else if (code === 92) {
           hasG92Line = true;
           stateNc.hasG92 = true;
@@ -217,13 +240,17 @@ function analyzeNc(text) {
       stateNc.tool = stateNc.t || stateNc.tool;
       toolInfo().p9000 = line;
       toolEvents.push({ line, type: "P9000", x: stateNc.x, y: stateNc.y, z: stateNc.z, tool: stateNc.tool });
+      addPoint("tool", { line, label: "工具取得", motionIndex: null });
     }
     if (cleaned.includes("G65") && pCode === 9900) {
       stateNc.hasP9900 = true;
       toolInfo().p9900 = line;
       toolEvents.push({ line, type: "P9900", x: stateNc.x, y: stateNc.y, z: stateNc.z, tool: stateNc.tool });
+      addPoint("tool", { line, label: "工具返却", motionIndex: null });
       stateNc.toolLoaded = false;
     }
+    if (mCodes.includes(3) || cleaned.includes("M23")) addPoint("spindleOn", { line, label: "主軸ON", motionIndex: null });
+    if ((words.some((w) => w.letter === "S" && w.value === 0)) || mCodes.includes(5)) addPoint("spindleStop", { line, label: "主軸停止", motionIndex: null });
 
     words.forEach(({ letter, value }) => {
       if (!["X", "Y", "Z"].includes(letter) || isDwell) return;
@@ -242,6 +269,7 @@ function analyzeNc(text) {
     if (hasG92Line) {
       inferred.machineOrigin = { x: lastMachineMove.x, y: lastMachineMove.y };
       inferred.workOrigin = { ...after };
+      addPoint("g92", { line, label: "加工原点設定", motionIndex: null });
     }
 
     let segment = null;
@@ -256,6 +284,7 @@ function analyzeNc(text) {
         inferred.materialTopZ = after.z;
         inferred.materialThickness = after.z;
         firstPlungeDone = true;
+        addPoint("materialTop", { line, label: "材料上面へ下降", motionIndex: activeMotionIndex });
       }
       if (!firstPlungeDone && stateNc.mode === "G90" && after.z > 0) {
         inferred.safeZ = Math.max(inferred.safeZ ?? after.z, after.z);
@@ -287,6 +316,10 @@ function analyzeNc(text) {
         endTime: inferred.timeSeconds,
       };
       segments.push(segment);
+      if (stateNc.mode === "G91" && after.z < before.z) addPoint("zDown", { line, label: "Z下降", motionIndex: segment.index });
+      if (stateNc.motion === "G00" && after.z <= (inferred.materialTopZ ?? 0) && (before.x !== after.x || before.y !== after.y)) {
+        addPoint("lowRapid", { line, label: "G00低Z移動", motionIndex: segment.index });
+      }
       toolInfo().count += 1;
       toolInfo().minZ = toolInfo().minZ === null ? after.z : Math.min(toolInfo().minZ, after.z);
       if (!stateNc.toolLoaded && ["G01", "G02", "G03"].includes(stateNc.motion)) {
@@ -307,6 +340,7 @@ function analyzeNc(text) {
       x: stateNc.x, y: stateNc.y, z: stateNc.z,
       f: stateNc.f, s: stateNc.s, t: stateNc.t,
       tool: stateNc.tool,
+      desc: describeRow({ cleaned, mCodes, hasG92Line, segment, before, after, mode: stateNc.mode, motion: stateNc.motion }),
     };
     rows.push(row);
     if (segment) motionRows.push(row);
@@ -332,6 +366,13 @@ function analyzeNc(text) {
   if (!stateNc.hasM92 || !stateNc.hasM95) addSafety("warn", "", "M92/M95が不足しています");
   if (stateNc.toolLoaded) addSafety("danger", "", "工具返却なしで終了しています");
   if (inferred.minZ < inferred.materialBottomZ - 1) addSafety("warn", "", "最深Zが材料下面を超えている可能性があります");
+  safety.forEach((item) => {
+    if (item.line) important.warning.push({ line: Number(item.line), label: item.message, motionIndex: motionIndexForLineInSegments(segments, Number(item.line)) });
+  });
+  if (segments.length) {
+    const minSeg = segments.reduce((best, seg) => seg.to.z < best.to.z ? seg : best, segments[0]);
+    important.minZ.push({ line: minSeg.line, label: "最深Z", motionIndex: minSeg.index });
+  }
 
   const motionBlocks = segments.map((seg) => ({
     lineIndex: seg.line,
@@ -349,7 +390,36 @@ function analyzeNc(text) {
     drawSegment: { from: seg.from, to: seg.to },
   }));
 
-  return { rows, motionRows, segments, motionBlocks, toolEvents, tools: Array.from(toolMap.values()), safety, inferred };
+  return { rows, motionRows, segments, motionBlocks, toolEvents, important, tools: Array.from(toolMap.values()), safety, inferred };
+}
+
+function motionIndexForLineInSegments(segments, line) {
+  if (!segments.length) return 0;
+  const exact = segments.find((seg) => seg.line >= line);
+  return exact ? exact.index : segments.length - 1;
+}
+
+function describeRow({ cleaned, mCodes, hasG92Line, segment, before, after, mode, motion }) {
+  if (hasG92Line || cleaned.includes("G92")) return "加工原点設定";
+  if (cleaned.includes("G65") && cleaned.includes("P9000")) return "工具取得";
+  if (cleaned.includes("G65") && cleaned.includes("P9900")) return "工具返却";
+  if (mCodes.includes(30)) return "終了";
+  if (mCodes.includes(3) || cleaned.includes("M23")) return "主軸ON";
+  if (mCodes.includes(5) || /\bS\s*0(?:\.0*)?\b/.test(cleaned)) return "主軸停止";
+  if (cleaned.includes("M21")) return "加工準備";
+  if (!segment) {
+    if (cleaned.includes("G90") || cleaned.includes("G91")) return `${mode}モード`;
+    return "NCブロック";
+  }
+  const xyMove = before.x !== after.x || before.y !== after.y;
+  const zMove = before.z !== after.z;
+  if (motion === "G00" && xyMove && !zMove) return "加工開始XYへ移動";
+  if (motion === "G00" && zMove && after.z > before.z) return "Z上昇";
+  if (motion === "G00" && zMove && after.z < before.z) return after.z > 0 ? "SafeZ/接近高さへ移動" : "Z下降";
+  if (mode === "G91" && zMove && after.z < before.z) return "材料上面へ下降";
+  if (["G01", "G02", "G03"].includes(motion) && zMove && after.z > before.z) return "Z上昇";
+  if (["G01", "G02", "G03"].includes(motion)) return "切削中";
+  return "移動";
 }
 
 async function initThree() {
@@ -456,8 +526,10 @@ function rebuildScene() {
   });
 
   addReferenceLines(inf);
-  addMarker(inf.workOrigin, 0x7c3aed, "cross");
-  addMarker({ x: inf.machineOrigin.x, y: inf.machineOrigin.y, z: 0 }, 0xdc2626, "diamond");
+  if (state.threeOptions.origin) {
+    addMarker(inf.workOrigin, 0x7c3aed, "cross");
+    addMarker({ x: inf.machineOrigin.x, y: inf.machineOrigin.y, z: 0 }, 0xdc2626, "diamond");
+  }
   if (inf.start) addMarker(inf.start, 0x111827, "sphere", 5);
   if (inf.end) addMarker(inf.end, 0x111827, "box", 7);
   a.toolEvents.forEach((event) => addMarker(event, event.type === "P9000" ? 0xf59e0b : 0xdc2626, "cone", 7));
@@ -470,19 +542,26 @@ function addReferenceLines(inf) {
   const maxX = Math.max(inf.materialX || 300, inf.maxX || 0, 300);
   const maxY = Math.max(inf.materialY || 300, inf.maxY || 0, 300);
   const zMax = Math.max(inf.safeZ || 80, inf.maxZ || 0, 80);
-  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(maxX, 0, 0)], 0xdc2626, false, 0.9));
-  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, maxY, 0)], 0x16a34a, false, 0.9));
-  referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, zMax)], 0x2563eb, false, 0.9));
-  referenceGroup.add(labelSprite("X", "#dc2626", { x: maxX + 18, y: 0, z: 0 }, 34));
-  referenceGroup.add(labelSprite("Y", "#16a34a", { x: 0, y: maxY + 18, z: 0 }, 34));
-  referenceGroup.add(labelSprite("Z", "#2563eb", { x: 0, y: 0, z: zMax + 14 }, 34));
-  referenceGroup.add(labelSprite("G92 X0 Y0", "#a78bfa", { x: 0, y: 0, z: Math.max(8, inf.materialTopZ || 0) }, 42));
+  if (state.threeOptions.axis) {
+    referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(maxX, 0, 0)], 0xdc2626, false, 0.9));
+    referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, maxY, 0)], 0x16a34a, false, 0.9));
+    referenceGroup.add(lineObject([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, zMax)], 0x2563eb, false, 0.9));
+    if (state.threeOptions.labels) {
+      referenceGroup.add(labelSprite("X", "#dc2626", { x: maxX + 18, y: 0, z: 0 }, 20));
+      referenceGroup.add(labelSprite("Y", "#16a34a", { x: 0, y: maxY + 18, z: 0 }, 20));
+      referenceGroup.add(labelSprite("Z", "#2563eb", { x: 0, y: 0, z: zMax + 14 }, 20));
+    }
+  }
+  if (state.threeOptions.origin) {
+    markerGroup.add(labelSprite("G92 X0 Y0", "#a78bfa", { x: 0, y: 0, z: Math.max(8, inf.materialTopZ || 0) }, 22));
+  }
   [
     ["MaterialTop", inf.materialTopZ, 0xffffff],
     ["MaterialBottom", inf.materialBottomZ, 0xb45309],
     ["SafeZ", inf.safeZ, 0x0f766e],
     ["ApproachZ", inf.approachZ, 0x2563eb],
   ].forEach(([label, z, color]) => {
+    if (!state.threeOptions.safeZ) return;
     const pts = [
       new THREE.Vector3(0, 0, z),
       new THREE.Vector3(maxX, 0, z),
@@ -491,7 +570,9 @@ function addReferenceLines(inf) {
       new THREE.Vector3(0, 0, z),
     ];
     referenceGroup.add(lineObject(pts, color, true, 0.6));
-    referenceGroup.add(labelSprite(label, `#${color.toString(16).padStart(6, "0")}`, { x: maxX + 18, y: maxY, z }, 26));
+    if (state.threeOptions.labels) {
+      referenceGroup.add(labelSprite(label, `#${color.toString(16).padStart(6, "0")}`, { x: maxX + 18, y: maxY, z }, 16));
+    }
   });
 }
 
@@ -607,7 +688,9 @@ function updateThreeDynamicGuides(pos) {
     new THREE.MeshBasicMaterial({ color: 0xfbbf24 })
   ));
   dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, 0);
-  dynamicGroup.add(labelSprite(`X${fmt(x)} Y${fmt(y)} Z${fmt(z)}`, "#fbbf24", { x: x + 18, y: y + 18, z: z + 18 }, 30));
+  if (state.threeOptions.coords) {
+    dynamicGroup.add(labelSprite(`X${fmt(x)} Y${fmt(y)} Z${fmt(z)}`, "#fbbf24", { x: x + 18, y: y + 18, z: z + 18 }, 16));
+  }
 }
 
 function renderThreeScene() {
@@ -716,11 +799,12 @@ function interpolateSegment(seg, seconds) {
   };
 }
 
-function updateToolAtIndex(index) {
+function updateToolAtIndex(index, options = {}) {
   if (!state.analysis.segments.length) {
     state.index = 0;
     state.displayPos = null;
     state.playTime = 0;
+    if (!options.keepActiveLine) state.activeLineOverride = null;
     updateHud(currentPosition());
     updateTimeline();
     return;
@@ -728,6 +812,7 @@ function updateToolAtIndex(index) {
   state.index = Math.max(0, Math.min(index, state.analysis.segments.length - 1));
   state.displayPos = null;
   state.playTime = state.analysis.segments[state.index]?.startTime ?? 0;
+  if (!options.keepActiveLine) state.activeLineOverride = null;
   renderAllNow();
 }
 
@@ -792,7 +877,11 @@ function updateHud(pos) {
   $("hudF").textContent = fmt(pos.f, 0);
   $("hudS").textContent = fmt(pos.s, 0);
   $("hudT").textContent = fmt(pos.t, 0);
-  $("currentLineLabel").textContent = pos.nNumber !== null && pos.nNumber !== undefined ? `N${String(pos.nNumber).padStart(6, "0")}` : (pos.line ? `L${pos.line}` : "----");
+  const line = activeLine();
+  const row = state.analysis.rows.find((item) => item.line === line);
+  const nNumber = row?.nNumber ?? pos.nNumber;
+  $("currentLineLabel").textContent = nNumber !== null && nNumber !== undefined ? `N${String(nNumber).padStart(6, "0")}` : (line ? `L${line}` : "----");
+  $("currentDescLabel").textContent = row?.desc || "NCブロック";
 }
 
 function updateFps(time) {
@@ -844,7 +933,7 @@ function renderSafety() {
 }
 
 function renderNcList(autoScroll = false) {
-  const activeLine = currentPosition().line;
+  const activeLine = activeLine();
   const activeRowIndex = Math.max(0, state.analysis.rows.findIndex((row) => row.line === activeLine));
   const radius = quality.lightweight || quality.mode === "light" ? 18 : 50;
   const start = Math.max(0, activeRowIndex - radius);
@@ -1130,10 +1219,23 @@ function updateTimeline() {
   $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
 }
 
+function activeLine() {
+  return state.activeLineOverride || currentPosition().line;
+}
+
 function motionIndexForLine(line) {
   if (!state.analysis.segments.length) return 0;
   const exact = state.analysis.segments.find((seg) => seg.line >= line);
   return exact ? exact.index : state.analysis.segments.length - 1;
+}
+
+function jumpToPoint(type) {
+  const points = state.analysis.important?.[type] || [];
+  if (!points.length) return;
+  const currentLine = activeLine() || 0;
+  const point = points.find((item) => Number(item.line || 0) > currentLine) || points[0];
+  state.activeLineOverride = Number(point.line || 0) || null;
+  updateToolAtIndex(point.motionIndex ?? motionIndexForLine(Number(point.line || 0)), { keepActiveLine: true });
 }
 
 function jumpToFirstCut() {
@@ -1142,24 +1244,15 @@ function jumpToFirstCut() {
 }
 
 function jumpToNextToolChange() {
-  const currentLine = currentPosition().line || 0;
-  const event = state.analysis.toolEvents.find((item) => item.line > currentLine);
-  if (event) jumpToIndex(motionIndexForLine(event.line));
+  jumpToPoint("tool");
 }
 
 function jumpToNextWarning() {
-  const currentLine = currentPosition().line || 0;
-  const warning = state.analysis.safety.find((item) => Number(item.line || 0) > currentLine);
-  if (warning) jumpToIndex(motionIndexForLine(Number(warning.line || 0)));
+  jumpToPoint("warning");
 }
 
 function jumpToMinZ() {
-  if (!state.analysis.segments.length) return;
-  let best = state.analysis.segments[0];
-  state.analysis.segments.forEach((seg) => {
-    if (seg.to.z < best.to.z) best = seg;
-  });
-  jumpToIndex(best.index);
+  jumpToPoint("minZ");
 }
 
 function jumpToEnd() {
@@ -1178,6 +1271,7 @@ function loadNc(text) {
   state.index = 0;
   state.playTime = 0;
   state.displayPos = null;
+  state.activeLineOverride = null;
   invalidateCanvasCaches();
   ncWindowStart = -1;
   state.analysis.segments.forEach((s) => { s.playhead = 0; });
@@ -1233,6 +1327,7 @@ function step(delta) {
 
 function startPlayback() {
   if (!state.analysis.segments.length) return;
+  state.activeLineOverride = null;
   if (state.index >= state.analysis.segments.length - 1) {
     state.index = 0;
     state.playTime = 0;
@@ -1246,7 +1341,7 @@ function startPlayback() {
 
 function saveLayout() {
   try {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode, followTool: state.followTool }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode, followTool: state.followTool, threeOptions: state.threeOptions }));
   } catch {
     // localStorage may be disabled in some embedded browsers.
   }
@@ -1259,6 +1354,7 @@ function loadLayout() {
     if (saved.xyView) state.xyView = { ...state.xyView, ...saved.xyView };
     if (saved.viewMode) state.viewMode = saved.viewMode;
     if (typeof saved.followTool === "boolean") state.followTool = saved.followTool;
+    if (saved.threeOptions) state.threeOptions = { ...state.threeOptions, ...saved.threeOptions };
   } catch {
     // Keep defaults.
   }
@@ -1283,6 +1379,11 @@ function applyLayout() {
   $("xyFullscreenBtn").textContent = state.layout.xyFullscreen ? "戻る" : "全画面";
   $("viewModeSelect").value = state.viewMode;
   $("followToolToggle").checked = state.followTool;
+  $("labelToggle").checked = state.threeOptions.labels;
+  $("axisToggle").checked = state.threeOptions.axis;
+  $("safeZToggle").checked = state.threeOptions.safeZ;
+  $("originToggle").checked = state.threeOptions.origin;
+  $("coordToggle").checked = state.threeOptions.coords;
   $("mainViewTitle").textContent = state.viewMode === "2d" ? "XY Motion" : state.viewMode === "split" ? "2D + 3D Motion" : "3D Motion";
   invalidateCanvasCaches();
   requestAnimationFrame(() => {
@@ -1440,6 +1541,24 @@ function bindEvents() {
     saveLayout();
     renderAllNow();
   });
+  ["labelToggle", "axisToggle", "safeZToggle", "originToggle", "coordToggle"].forEach((id) => {
+    $(id).addEventListener("change", () => {
+      state.threeOptions = {
+        labels: $("labelToggle").checked,
+        axis: $("axisToggle").checked,
+        safeZ: $("safeZToggle").checked,
+        origin: $("originToggle").checked,
+        coords: $("coordToggle").checked,
+      };
+      saveLayout();
+      rebuildScene();
+      renderAllNow();
+    });
+  });
+  $("jumpG92Btn").addEventListener("click", () => jumpToPoint("g92"));
+  $("jumpMaterialTopBtn").addEventListener("click", () => jumpToPoint("materialTop"));
+  $("jumpZDownBtn").addEventListener("click", () => jumpToPoint("zDown"));
+  $("jumpLowRapidBtn").addEventListener("click", () => jumpToPoint("lowRapid"));
   $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
   $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
   $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
@@ -1454,6 +1573,10 @@ function bindEvents() {
     if (motion !== "") {
       state.playing = false;
       jumpToIndex(Number(motion));
+    } else {
+      state.playing = false;
+      state.activeLineOverride = Number(row.dataset.line || 0) || null;
+      updateToolAtIndex(motionIndexForLine(Number(row.dataset.line || 0)), { keepActiveLine: true });
     }
   });
   $("xyMaterialBtn").addEventListener("click", () => {

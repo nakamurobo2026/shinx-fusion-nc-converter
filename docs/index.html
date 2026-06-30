@@ -45,10 +45,14 @@
       </div>
 
       <div class="jumpbar">
-        <button id="jumpStartBtn" title="最初の加工開始へ">加工開始</button>
+        <button id="jumpG92Btn" title="G92行へ">G92</button>
+        <button id="jumpMaterialTopBtn" title="材料上面到達へ">材料上面</button>
+        <button id="jumpMinZBtn" title="最深Zへ">最深Z</button>
+        <button id="jumpZDownBtn" title="次のZ下降へ">Z下降</button>
+        <button id="jumpLowRapidBtn" title="G00低Z移動へ">G00低Z</button>
         <button id="jumpToolBtn" title="次の工具交換へ">工具交換</button>
         <button id="jumpWarnBtn" title="次の警告へ">警告</button>
-        <button id="jumpMinZBtn" title="最深Zへ">最深Z</button>
+        <button id="jumpStartBtn" title="最初の加工開始へ">加工開始</button>
         <button id="jumpEndBtn" title="最後へ">最後</button>
       </div>
 
@@ -73,6 +77,7 @@
       <div class="now-line">
         <span>現在行</span>
         <strong id="currentLineLabel">----</strong>
+        <small id="currentDescLabel">NC未読込</small>
         <em id="blockCountLabel">0 blocks / 0 lines</em>
       </div>
     </header>
@@ -91,6 +96,11 @@
             <button id="viewIsoBtn" class="mini" title="斜め視点">斜め</button>
             <button id="reset3dBtn" class="mini" title="3D視点リセット">視点</button>
             <label class="mini-check"><input id="followToolToggle" type="checkbox" />追従</label>
+            <label class="mini-check"><input id="labelToggle" type="checkbox" />ラベル</label>
+            <label class="mini-check"><input id="axisToggle" type="checkbox" checked />軸</label>
+            <label class="mini-check"><input id="safeZToggle" type="checkbox" checked />SafeZ</label>
+            <label class="mini-check"><input id="originToggle" type="checkbox" checked />原点</label>
+            <label class="mini-check"><input id="coordToggle" type="checkbox" />座標</label>
             <button id="xyFullscreenBtn" class="mini" title="XY Motionだけ全画面">全画面</button>
           </div>
         </div>

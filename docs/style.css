@@ -149,7 +149,7 @@ button:hover, button.active {
 .jumpbar button {
   min-width: auto;
   height: 32px;
-  padding: 0 9px;
+  padding: 0 8px;
   font-size: 12px;
 }
 
@@ -173,6 +173,12 @@ button:hover, button.active {
 
 .now-line strong {
   font: 700 18px Consolas, "Courier New", monospace;
+}
+
+.now-line small {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .now-line em {
@@ -405,12 +411,12 @@ button.mini {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 0 8px;
+  padding: 0 6px;
   border: 1px solid var(--line);
   border-radius: 6px;
   background: rgba(255, 255, 255, .92);
   color: var(--ink);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 800;
 }
 
