@@ -933,20 +933,20 @@ function renderSafety() {
 }
 
 function renderNcList(autoScroll = false) {
-  const activeLine = activeLine();
-  const activeRowIndex = Math.max(0, state.analysis.rows.findIndex((row) => row.line === activeLine));
+  const currentLine = activeLine();
+  const activeRowIndex = Math.max(0, state.analysis.rows.findIndex((row) => row.line === currentLine));
   const radius = quality.lightweight || quality.mode === "light" ? 18 : 50;
   const start = Math.max(0, activeRowIndex - radius);
   const end = Math.min(state.analysis.rows.length, activeRowIndex + radius + 1);
-  if (ncWindowStart === start && $("ncList").dataset.activeLine === String(activeLine)) {
+  if (ncWindowStart === start && $("ncList").dataset.activeLine === String(currentLine)) {
     return;
   }
   ncWindowStart = start;
-  $("ncList").dataset.activeLine = String(activeLine);
+  $("ncList").dataset.activeLine = String(currentLine);
   const topPad = start > 0 ? `<div class="nc-pad">... ${start} lines above ...</div>` : "";
   const bottomPad = end < state.analysis.rows.length ? `<div class="nc-pad">... ${state.analysis.rows.length - end} lines below ...</div>` : "";
   const rowsHtml = state.analysis.rows.slice(start, end).map((row) => {
-    const active = row.line === activeLine ? " active" : "";
+    const active = row.line === currentLine ? " active" : "";
     const label = row.nNumber !== null && row.nNumber !== undefined ? `N${String(row.nNumber).padStart(6, "0")}` : `L${row.line}`;
     const block = row.motionIndex !== null && row.motionIndex !== undefined ? `B${String(row.motionIndex + 1).padStart(4, "0")}` : "----";
     return `<div class="nc-row${active}" data-motion="${row.motionIndex ?? ""}" data-line="${row.line}"><span class="line"><b>${block}</b>${label}</span><span>${escapeHtml(row.raw)}</span></div>`;
