@@ -26,6 +26,8 @@
         <input id="fileInput" type="file" accept=".nc,.txt,.tap,.gcode,text/plain" />
       </div>
 
+      <div id="preflightStatus" class="preflight ok">実機投入OK</div>
+
       <div class="transport">
         <button id="playBtn" title="再生">▶</button>
         <button id="pauseBtn" title="一時停止">⏸</button>
@@ -151,7 +153,7 @@
         </section>
 
         <section class="safety-panel">
-          <h2>安全チェック</h2>
+          <h2>危険箇所一覧</h2>
           <div id="safetyState" class="safety-state ok">正常</div>
           <div id="safetyList" class="safety-list"></div>
         </section>

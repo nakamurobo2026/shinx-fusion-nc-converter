@@ -115,6 +115,7 @@ function dist(a, b) {
 
 function motionStyle(seg) {
   if (!seg) return { color: "#64748b", three: 0x64748b, dashed: false, label: "移動" };
+  if (seg.danger) return { color: "#dc2626", three: 0xff1f1f, dashed: false, label: "危険" };
   const zDelta = (seg.to?.z ?? 0) - (seg.from?.z ?? 0);
   const xyDelta = Math.hypot((seg.to?.x ?? 0) - (seg.from?.x ?? 0), (seg.to?.y ?? 0) - (seg.from?.y ?? 0));
   if (zDelta < -0.0001 && xyDelta < 0.0001) return { color: "#dc2626", three: 0xdc2626, dashed: false, label: "Z下降" };
@@ -172,7 +173,14 @@ function analyzeNc(text) {
   let firstPlungeDone = false;
   let activeMotionIndex = -1;
 
-  const addSafety = (level, line, message) => safety.push({ level, line, message });
+  const addSafety = (level, line, message, extra = {}) => {
+    const item = { level, line, message, ...extra };
+    safety.push(item);
+    if (extra.motionIndex !== undefined && segments[extra.motionIndex]) {
+      segments[extra.motionIndex].danger = level === "danger";
+      segments[extra.motionIndex].warning = level !== "danger";
+    }
+  };
   const addPoint = (type, item) => {
     if (!important[type]) important[type] = [];
     important[type].push(item);
@@ -332,15 +340,28 @@ function analyzeNc(text) {
       if (stateNc.mode === "G91" && after.z < before.z) addPoint("zDown", { line, label: "Z下降", motionIndex: segment.index });
       if (stateNc.motion === "G00" && after.z <= (inferred.materialTopZ ?? 0) && (before.x !== after.x || before.y !== after.y)) {
         addPoint("lowRapid", { line, label: "G00低Z移動", motionIndex: segment.index });
+        addSafety("danger", line, "G00で低いZのままXY移動しています", {
+          type: "G00低Z移動",
+          x: after.x, y: after.y, z: after.z,
+          motionIndex: segment.index,
+        });
       }
       toolInfo().count += 1;
       toolInfo().minZ = toolInfo().minZ === null ? after.z : Math.min(toolInfo().minZ, after.z);
       if (!stateNc.toolLoaded && ["G01", "G02", "G03"].includes(stateNc.motion)) {
-        addSafety("danger", line, "工具取得前に加工しています");
+        addSafety("danger", line, "工具取得前に加工しています", {
+          type: "工具未取得加工",
+          x: after.x, y: after.y, z: after.z,
+          motionIndex: segment.index,
+        });
         toolInfo().warnings += 1;
       }
       if (!stateNc.spindle && ["G01", "G02", "G03"].includes(stateNc.motion)) {
-        addSafety("danger", line, "主軸ON前に加工しています");
+        addSafety("danger", line, "主軸OFFで切削移動しています", {
+          type: "主軸OFF切削",
+          x: after.x, y: after.y, z: after.z,
+          motionIndex: segment.index,
+        });
         toolInfo().warnings += 1;
       }
     }
@@ -363,7 +384,7 @@ function analyzeNc(text) {
   inferred.materialThickness ??= inferred.materialTopZ;
   inferred.approachZ ??= inferred.materialTopZ;
   inferred.safeZ ??= inferred.maxZ ?? inferred.materialTopZ;
-  inferred.materialBottomZ = Math.min(0, inferred.minZ ?? 0);
+  inferred.materialBottomZ = 0;
   inferred.minZ ??= 0;
   inferred.maxZ ??= inferred.safeZ;
   const width = inferred.maxX !== null ? inferred.maxX - Math.min(0, inferred.minX) : 0;
@@ -371,14 +392,45 @@ function analyzeNc(text) {
   inferred.materialX = Math.max(300, Math.ceil(width / 10) * 10 || 300);
   inferred.materialY = Math.max(300, Math.ceil(depth / 10) * 10 || 300);
 
-  if (!stateNc.hasG92) addSafety("danger", "", "G92がありません");
-  if (!stateNc.hasM21) addSafety("warn", "", "M21がありません");
-  if (!stateNc.hasP9000) addSafety("danger", "", "P9000工具取得がありません");
-  if (!stateNc.hasP9900) addSafety("danger", "", "P9900工具返却がありません");
-  if (!stateNc.hasG218 || !stateNc.hasG219) addSafety("warn", "", "G218/G219が不足しています");
-  if (!stateNc.hasM92 || !stateNc.hasM95) addSafety("warn", "", "M92/M95が不足しています");
-  if (stateNc.toolLoaded) addSafety("danger", "", "工具返却なしで終了しています");
-  if (inferred.minZ < inferred.materialBottomZ - 1) addSafety("warn", "", "最深Zが材料下面を超えている可能性があります");
+  segments.forEach((seg) => {
+    if (seg.to.z < inferred.materialBottomZ - 0.5) {
+      addSafety("danger", seg.line, "materialBottomより深いZへ移動しています", {
+        type: "材料下面超過",
+        x: seg.to.x, y: seg.to.y, z: seg.to.z,
+        motionIndex: seg.index,
+      });
+    }
+  });
+  toolEvents.forEach((event) => {
+    if (event.z < (inferred.safeZ ?? 0) - 0.5) {
+      const level = event.z <= (inferred.materialTopZ ?? 0) ? "danger" : "warn";
+      addSafety(level, event.line, "SafeZ退避なしで工具交換しています", {
+        type: "工具交換退避不足",
+        x: event.x, y: event.y, z: event.z,
+        motionIndex: motionIndexForLineInSegments(segments, event.line),
+      });
+    }
+  });
+  important.g92.forEach((item) => addSafety("info", item.line, "加工原点G92を設定しています", {
+    type: "G92加工原点",
+    x: inferred.workOrigin.x, y: inferred.workOrigin.y, z: inferred.workOrigin.z,
+    motionIndex: motionIndexForLineInSegments(segments, item.line),
+  }));
+  important.materialTop.forEach((item) => {
+    const seg = segments[item.motionIndex];
+    addSafety("info", item.line, "材料上面へ到達しました", {
+      type: "材料上面",
+      x: seg?.to.x, y: seg?.to.y, z: seg?.to.z,
+      motionIndex: item.motionIndex,
+    });
+  });
+  if (!stateNc.hasG92) addSafety("danger", "", "G92がありません", { type: "G92なし" });
+  if (!stateNc.hasM21) addSafety("warn", "", "M21がありません", { type: "M21なし" });
+  if (!stateNc.hasP9000) addSafety("danger", "", "P9000工具取得がありません", { type: "工具取得なし" });
+  if (!stateNc.hasP9900) addSafety("danger", "", "P9900工具返却がありません", { type: "工具返却なし" });
+  if (!stateNc.hasG218 || !stateNc.hasG219) addSafety("warn", "", "G218/G219が不足しています", { type: "G218/G219不足" });
+  if (!stateNc.hasM92 || !stateNc.hasM95) addSafety("warn", "", "M92/M95が不足しています", { type: "M92/M95不足" });
+  if (stateNc.toolLoaded) addSafety("danger", "", "工具返却なしで終了しています", { type: "工具未返却" });
   safety.forEach((item) => {
     if (item.line) important.warning.push({ line: Number(item.line), label: item.message, motionIndex: motionIndexForLineInSegments(segments, Number(item.line)) });
   });
@@ -953,9 +1005,28 @@ function renderSafety() {
   const box = $("safetyState");
   box.className = `safety-state ${danger ? "danger" : warn ? "warn" : "ok"}`;
   box.textContent = danger ? "危険" : warn ? "注意" : "正常";
+  const preflight = $("preflightStatus");
+  preflight.className = `preflight ${danger ? "danger" : warn ? "warn" : "ok"}`;
+  preflight.textContent = danger ? "危険あり" : warn ? "要確認" : "実機投入OK";
   $("safetyList").innerHTML = items.length
-    ? items.map((i) => `<div class="safety-item ${i.level === "danger" ? "danger" : ""}">${i.line ? `L${i.line} ` : ""}${escapeHtml(i.message)}</div>`).join("")
+    ? items.map((i, idx) => {
+      const cls = i.level === "danger" ? "danger" : i.level === "info" ? "info" : "";
+      const xyz = i.x !== undefined ? `X${fmt(i.x)} Y${fmt(i.y)} Z${fmt(i.z)}` : "座標なし";
+      const line = i.line ? `L${i.line}` : "全体";
+      return `<div class="safety-item ${cls}" data-safety="${idx}">
+        <strong>${escapeHtml(i.type || levelLabel(i.level))} / ${line}</strong>
+        <code>${xyz}</code>
+        <span>${escapeHtml(i.message)}</span>
+        <button type="button" class="mini safety-jump">ジャンプ</button>
+      </div>`;
+    }).join("")
     : `<div class="safety-item">異常は検出されていません</div>`;
+}
+
+function levelLabel(level) {
+  if (level === "danger") return "危険";
+  if (level === "info") return "情報";
+  return "要確認";
 }
 
 function renderNcList(autoScroll = false) {
@@ -1294,7 +1365,9 @@ function updateMachinePanel(pos, row) {
   $("panelRpm").textContent = fmt(pos.s, 0);
   $("panelFeed").textContent = pos.f ? fmt(pos.f * state.feedOverride / 100, 0) : "-";
   $("panelSpindle").textContent = pos.s && pos.s > 0 ? "ON" : "OFF";
-  $("panelSafe").textContent = state.analysis.safety.length ? "注意" : "正常";
+  const hasDanger = state.analysis.safety.some((item) => item.level === "danger");
+  const hasWarn = state.analysis.safety.some((item) => item.level === "warn");
+  $("panelSafe").textContent = hasDanger ? "危険" : hasWarn ? "要確認" : "正常";
 }
 
 function activeLine() {
@@ -1690,6 +1763,15 @@ function bindEvents() {
       state.activeLineOverride = Number(row.dataset.line || 0) || null;
       updateToolAtIndex(motionIndexForLine(Number(row.dataset.line || 0)), { keepActiveLine: true });
     }
+  });
+  $("safetyList").addEventListener("click", (event) => {
+    const item = event.target.closest(".safety-item[data-safety]");
+    if (!item) return;
+    const safety = state.analysis.safety[Number(item.dataset.safety)];
+    if (!safety) return;
+    state.playing = false;
+    state.activeLineOverride = Number(safety.line || 0) || null;
+    updateToolAtIndex(safety.motionIndex ?? motionIndexForLine(Number(safety.line || 0)), { keepActiveLine: true });
   });
   document.addEventListener("keydown", (event) => {
     if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName)) return;
