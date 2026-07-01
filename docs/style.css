@@ -317,7 +317,7 @@ body.view-split #xyCanvas {
   grid-column: 3 / 4;
   grid-row: 1 / 2;
   display: grid;
-  grid-template-rows: minmax(180px, .55fr) auto minmax(120px, auto);
+  grid-template-rows: minmax(170px, .48fr) auto auto minmax(110px, auto);
   gap: 10px;
   overflow: hidden;
 }
@@ -368,6 +368,51 @@ body.view-split #xyCanvas {
   grid-template-columns: 1fr 1fr;
   gap: 7px;
 }
+
+.machine-panel {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 7px;
+}
+
+.machine-panel > div,
+.machine-panel label {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel-soft);
+  padding: 7px;
+}
+
+.machine-panel span {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 900;
+}
+
+.machine-panel strong {
+  font: 800 15px Consolas, "Courier New", monospace;
+}
+
+.machine-panel select {
+  width: 100%;
+  height: 28px;
+  margin-top: 3px;
+}
+
+.machine-state {
+  grid-column: 1 / 3;
+  background: #ecfdf5 !important;
+  color: var(--ok);
+  font-weight: 1000;
+  text-align: center;
+}
+
+.machine-state.warn { background: #fff7ed !important; color: var(--warn); }
+.machine-state.danger { background: #fef2f2 !important; color: var(--danger); }
+.machine-state.cut { background: #eff6ff !important; color: #2563eb; }
 
 .metric {
   border: 1px solid var(--line);
@@ -485,7 +530,7 @@ canvas {
 
 .timeline-wrap {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px 190px 80px;
+  grid-template-columns: minmax(0, 1fr) 120px 110px 64px 190px 80px;
   align-items: center;
   gap: 12px;
   padding: 6px 10px;
@@ -501,7 +546,7 @@ body.z-hidden .section-panel .canvas-box {
 }
 
 body.z-hidden .right-panel {
-  grid-template-rows: 48px auto minmax(130px, 1fr);
+  grid-template-rows: 48px auto auto minmax(130px, 1fr);
 }
 
 body.nc-hidden {
@@ -538,7 +583,7 @@ body.detail-mode {
 }
 
 body.detail-mode .right-panel {
-  grid-template-rows: minmax(220px, 1fr) auto minmax(150px, auto);
+  grid-template-rows: minmax(220px, 1fr) auto auto minmax(150px, auto);
 }
 
 body.field-mode .hud strong {
@@ -554,6 +599,13 @@ body.field-mode .bottom-panel {
 }
 
 #timeLabel {
+  color: var(--muted);
+  font: 700 12px Consolas, "Courier New", monospace;
+  text-align: right;
+}
+
+#remainLabel,
+#progressLabel {
   color: var(--muted);
   font: 700 12px Consolas, "Courier New", monospace;
   text-align: right;

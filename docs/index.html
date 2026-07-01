@@ -49,8 +49,10 @@
         <button id="jumpMaterialTopBtn" title="材料上面到達へ">材料上面</button>
         <button id="jumpMinZBtn" title="最深Zへ">最深Z</button>
         <button id="jumpZDownBtn" title="次のZ下降へ">Z下降</button>
+        <button id="jumpPrevZDownBtn" title="前のZ下降へ">前Z</button>
         <button id="jumpLowRapidBtn" title="G00低Z移動へ">G00低Z</button>
         <button id="jumpToolBtn" title="次の工具交換へ">工具交換</button>
+        <button id="jumpPrevToolBtn" title="前の工具交換へ">前工具</button>
         <button id="jumpWarnBtn" title="次の警告へ">警告</button>
         <button id="jumpStartBtn" title="最初の加工開始へ">加工開始</button>
         <button id="jumpEndBtn" title="最後へ">最後</button>
@@ -99,6 +101,7 @@
             <label class="mini-check"><input id="labelToggle" type="checkbox" />ラベル</label>
             <label class="mini-check"><input id="axisToggle" type="checkbox" checked />軸</label>
             <label class="mini-check"><input id="safeZToggle" type="checkbox" checked />SafeZ</label>
+            <label class="mini-check"><input id="zLabelToggle" type="checkbox" />Z名</label>
             <label class="mini-check"><input id="originToggle" type="checkbox" checked />原点</label>
             <label class="mini-check"><input id="coordToggle" type="checkbox" />座標</label>
             <button id="xyFullscreenBtn" class="mini" title="XY Motionだけ全画面">全画面</button>
@@ -130,6 +133,19 @@
         </section>
 
         <section class="summary-panel">
+          <h2>Machine Panel</h2>
+          <div class="machine-panel">
+            <div class="machine-state" id="machineStateLabel">待機</div>
+            <div><span>Tool</span><strong id="panelTool">-</strong></div>
+            <div><span>Spindle</span><strong id="panelSpindle">OFF</strong></div>
+            <div><span>RPM</span><strong id="panelRpm">-</strong></div>
+            <div><span>Feed</span><strong id="panelFeed">-</strong></div>
+            <label><span>Feed Override</span><select id="feedOverrideSelect"><option>10</option><option>25</option><option>50</option><option selected>100</option><option>150</option><option>200</option></select></label>
+            <div><span>Safe Check</span><strong id="panelSafe">正常</strong></div>
+          </div>
+        </section>
+
+        <section class="summary-panel">
           <h2>自動判定</h2>
           <div id="summaryGrid" class="summary-grid"></div>
         </section>
@@ -147,6 +163,8 @@
         <div class="timeline-wrap">
           <input id="timeline" type="range" min="0" max="0" value="0" />
           <span id="timeLabel">00:00 / 00:00</span>
+          <span id="remainLabel">残り 00:00</span>
+          <span id="progressLabel">0%</span>
           <span id="bottomCountLabel">0 motion blocks / 0 NC lines</span>
           <button id="toggleNcBtn" class="mini">NC非表示</button>
         </div>

@@ -15,8 +15,9 @@ const state = {
   displayPos: null,
   xyView: { zoom: 1, panX: 0, panY: 0 },
   xyUserView: false,
+  feedOverride: 100,
   layout: { mode: "field", zHidden: false, ncHidden: false, xyFullscreen: false, sideWidth: 320, bottomHeight: 210 },
-  threeOptions: { labels: false, axis: true, safeZ: true, origin: true, coords: false },
+  threeOptions: { labels: true, axis: true, safeZ: true, zLabels: false, origin: true, coords: false },
 };
 
 const perf = {
@@ -110,6 +111,18 @@ function gName(value) {
 
 function dist(a, b) {
   return Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+}
+
+function motionStyle(seg) {
+  if (!seg) return { color: "#64748b", three: 0x64748b, dashed: false, label: "移動" };
+  const zDelta = (seg.to?.z ?? 0) - (seg.from?.z ?? 0);
+  const xyDelta = Math.hypot((seg.to?.x ?? 0) - (seg.from?.x ?? 0), (seg.to?.y ?? 0) - (seg.from?.y ?? 0));
+  if (zDelta < -0.0001 && xyDelta < 0.0001) return { color: "#dc2626", three: 0xdc2626, dashed: false, label: "Z下降" };
+  if (zDelta > 0.0001 && xyDelta < 0.0001) return { color: "#06b6d4", three: 0x06b6d4, dashed: false, label: "Z上昇" };
+  if (seg.type === "G00") return { color: "#6b7280", three: 0x9ca3af, dashed: true, label: "早送り" };
+  if (["G02", "G03"].includes(seg.type)) return { color: "#16a34a", three: 0x16a34a, dashed: false, label: "円弧" };
+  if (seg.type === "G01") return { color: "#2563eb", three: 0x2563eb, dashed: false, label: "切削" };
+  return { color: "#64748b", three: 0x64748b, dashed: false, label: "移動" };
 }
 
 function analyzeNc(text) {
@@ -400,11 +413,13 @@ function motionIndexForLineInSegments(segments, line) {
 }
 
 function describeRow({ cleaned, mCodes, hasG92Line, segment, before, after, mode, motion }) {
+  if (mCodes.includes(6)) return "プログラム開始";
   if (hasG92Line || cleaned.includes("G92")) return "加工原点設定";
   if (cleaned.includes("G65") && cleaned.includes("P9000")) return "工具取得";
   if (cleaned.includes("G65") && cleaned.includes("P9900")) return "工具返却";
   if (mCodes.includes(30)) return "終了";
   if (mCodes.includes(3) || cleaned.includes("M23")) return "主軸ON";
+  if (/\bS\s*[1-9]\d*(?:\.\d*)?\b/.test(cleaned)) return "主軸回転数設定";
   if (mCodes.includes(5) || /\bS\s*0(?:\.0*)?\b/.test(cleaned)) return "主軸停止";
   if (cleaned.includes("M21")) return "加工準備";
   if (!segment) {
@@ -414,8 +429,8 @@ function describeRow({ cleaned, mCodes, hasG92Line, segment, before, after, mode
   const xyMove = before.x !== after.x || before.y !== after.y;
   const zMove = before.z !== after.z;
   if (motion === "G00" && xyMove && !zMove) return "加工開始XYへ移動";
-  if (motion === "G00" && zMove && after.z > before.z) return "Z上昇";
-  if (motion === "G00" && zMove && after.z < before.z) return after.z > 0 ? "SafeZ/接近高さへ移動" : "Z下降";
+  if (motion === "G00" && zMove && after.z > before.z) return after.z > 0 ? "SafeZ退避" : "Z上昇";
+  if (motion === "G00" && zMove && after.z < before.z) return after.z > 0 ? "SafeZ/ApproachZへ移動" : "Z下降";
   if (mode === "G91" && zMove && after.z < before.z) return "材料上面へ下降";
   if (["G01", "G02", "G03"].includes(motion) && zMove && after.z > before.z) return "Z上昇";
   if (["G01", "G02", "G03"].includes(motion)) return "切削中";
@@ -463,14 +478,14 @@ async function initThree() {
 function createToolMesh() {
   const group = new THREE.Group();
   const holder = new THREE.Mesh(
-    new THREE.CylinderGeometry(2.8, 2.8, 48, 20),
-    new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.35, roughness: 0.35 })
+    new THREE.CylinderGeometry(5.2, 5.2, 58, 24),
+    new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0x5c3b00, emissiveIntensity: 0.35, metalness: 0.25, roughness: 0.3 })
   );
   holder.rotation.x = Math.PI / 2;
-  holder.position.z = 24;
+  holder.position.z = 29;
   const tip = new THREE.Mesh(
-    new THREE.SphereGeometry(6.5, 24, 16),
-    new THREE.MeshStandardMaterial({ color: 0x111827, metalness: 0.3, roughness: 0.4 })
+    new THREE.SphereGeometry(9, 28, 18),
+    new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0x7f1d1d, emissiveIntensity: 0.65, metalness: 0.15, roughness: 0.25 })
   );
   tip.position.z = 0;
   group.add(holder, tip);
@@ -521,8 +536,8 @@ function rebuildScene() {
 
   const inf = a.inferred;
   a.segments.forEach((seg) => {
-    const color = seg.type === "G00" ? 0x9ca3af : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
-    pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00", 0.22));
+    const style = motionStyle(seg);
+    pathGroup.add(lineObject([vec(seg.from), vec(seg.to)], style.three, style.dashed, 0.22));
   });
 
   addReferenceLines(inf);
@@ -533,6 +548,11 @@ function rebuildScene() {
   if (inf.start) addMarker(inf.start, 0x111827, "sphere", 5);
   if (inf.end) addMarker(inf.end, 0x111827, "box", 7);
   a.toolEvents.forEach((event) => addMarker(event, event.type === "P9000" ? 0xf59e0b : 0xdc2626, "cone", 7));
+  a.safety.forEach((item) => {
+    if (!item.line) return;
+    const seg = a.segments[motionIndexForLineInSegments(a.segments, Number(item.line))];
+    if (seg) addMarker(seg.to, 0xff1f1f, "diamond", 10);
+  });
 
   reset3dCamera();
   updateToolAtIndex(0);
@@ -570,7 +590,7 @@ function addReferenceLines(inf) {
       new THREE.Vector3(0, 0, z),
     ];
     referenceGroup.add(lineObject(pts, color, true, 0.6));
-    if (state.threeOptions.labels) {
+    if (state.threeOptions.labels && state.threeOptions.zLabels) {
       referenceGroup.add(labelSprite(label, `#${color.toString(16).padStart(6, "0")}`, { x: maxX + 18, y: maxY, z }, 16));
     }
   });
@@ -654,8 +674,8 @@ function updateThreeDonePath() {
   const step = light ? 4 : 1;
   for (let idx = lastDone3dIndex + 1; idx <= current && idx < state.analysis.segments.length; idx += step) {
     const seg = state.analysis.segments[idx];
-    const color = seg.type === "G00" ? 0x6b7280 : ["G02", "G03"].includes(seg.type) ? 0x2563eb : 0x0f766e;
-    donePathGroup.add(lineObject([vec(seg.from), vec(seg.to)], color, seg.type === "G00", 0.95));
+    const style = motionStyle(seg);
+    donePathGroup.add(lineObject([vec(seg.from), vec(seg.to)], style.three, style.dashed, 0.95));
   }
   lastDone3dIndex = current;
 }
@@ -679,8 +699,13 @@ function updateThreeDynamicGuides(pos) {
   const z = pos.z || 0;
   dynamicGroup.add(lineObject([new THREE.Vector3(x, y, 0), new THREE.Vector3(x, y, z)], 0xfbbf24, true, 0.9));
   dynamicGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(8, 24, 16),
-    new THREE.MeshBasicMaterial({ color: 0xef4444 })
+    new THREE.SphereGeometry(12, 30, 20),
+    new THREE.MeshBasicMaterial({ color: 0xff2d20, transparent: true, opacity: 0.95 })
+  ));
+  dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, z);
+  dynamicGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(20, 30, 20),
+    new THREE.MeshBasicMaterial({ color: 0xff5a1f, transparent: true, opacity: 0.22, depthWrite: false })
   ));
   dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, z);
   dynamicGroup.add(new THREE.Mesh(
@@ -882,6 +907,7 @@ function updateHud(pos) {
   const nNumber = row?.nNumber ?? pos.nNumber;
   $("currentLineLabel").textContent = nNumber !== null && nNumber !== undefined ? `N${String(nNumber).padStart(6, "0")}` : (line ? `L${line}` : "----");
   $("currentDescLabel").textContent = row?.desc || "NCブロック";
+  updateMachinePanel(pos, row);
 }
 
 function updateFps(time) {
@@ -1087,13 +1113,16 @@ function drawXYStatic(ctx, w, h, a, inf, transform) {
     if ((quality.mode === "light" || quality.lightweight) && idx % 3 !== 0) return;
     const p0 = px(seg.from);
     const p1 = px(seg.to);
-    ctx.strokeStyle = "#cbd5df";
+    const style = motionStyle(seg);
+    ctx.strokeStyle = style.color;
+    ctx.globalAlpha = 0.22;
     ctx.lineWidth = 1.5;
-    ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
+    ctx.setLineDash(style.dashed ? [5, 4] : []);
     ctx.beginPath();
     ctx.moveTo(p0.x, p0.y);
     ctx.lineTo(p1.x, p1.y);
     ctx.stroke();
+    ctx.globalAlpha = 1;
   });
   ctx.setLineDash([]);
   drawCross2d(ctx, px({ x: 0, y: 0 }), 10, "#111827");
@@ -1118,6 +1147,18 @@ function drawXYStatic(ctx, w, h, a, inf, transform) {
     ctx.lineTo(p.x - 8, p.y + 8);
     ctx.closePath();
     ctx.fill();
+  });
+  a.safety.forEach((item) => {
+    if (!item.line) return;
+    const seg = a.segments[motionIndexForLineInSegments(a.segments, Number(item.line))];
+    if (!seg) return;
+    const p = px(seg.to);
+    ctx.strokeStyle = "#dc2626";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 10, 0, Math.PI * 2);
+    ctx.stroke();
+    drawCross2d(ctx, p, 7, "#dc2626");
   });
 }
 
@@ -1149,10 +1190,10 @@ function drawXYDynamic(ctx, a, transform) {
 function drawXYSegment(ctx, px, seg, active) {
   const p0 = px(seg.from);
   const p1 = px(seg.to);
-  const cutColor = ["G02", "G03"].includes(seg.type) ? "#2563eb" : "#0f766e";
-  ctx.strokeStyle = seg.type === "G00" ? "#6b7280" : cutColor;
+  const style = motionStyle(seg);
+  ctx.strokeStyle = style.color;
   ctx.lineWidth = active ? 4 : 2;
-  ctx.setLineDash(seg.type === "G00" ? [5, 4] : []);
+  ctx.setLineDash(style.dashed ? [5, 4] : []);
   ctx.beginPath();
   ctx.moveTo(p0.x, p0.y);
   ctx.lineTo(p1.x, p1.y);
@@ -1216,7 +1257,44 @@ function updateTimeline() {
   $("timeline").value = state.index;
   const block = state.analysis.motionBlocks[state.index];
   const elapsed = state.playing && quality.smooth ? state.playTime : block ? block.cumulativeTime : 0;
-  $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(state.analysis.inferred.timeSeconds)}`;
+  const totalTime = state.analysis.inferred.timeSeconds || 0;
+  const progress = total ? state.index / Math.max(1, total - 1) * 100 : 0;
+  $("timeLabel").textContent = `${formatTime(elapsed)} / ${formatTime(totalTime)}`;
+  $("remainLabel").textContent = `残り ${formatTime(Math.max(0, totalTime - elapsed))}`;
+  $("progressLabel").textContent = `${fmt(progress, 0)}%`;
+  $("bottomCountLabel").textContent = `${state.index + 1}/${Math.max(total, 1)} blocks / L${activeLine() || "-"}`;
+}
+
+function updateMachinePanel(pos, row) {
+  const desc = row?.desc || "待機";
+  const safetyHere = state.analysis.safety.some((item) => Number(item.line || 0) === Number(activeLine() || 0));
+  let stateText = "待機";
+  let stateClass = "";
+  if (safetyHere) {
+    stateText = "警告";
+    stateClass = "danger";
+  } else if (desc.includes("工具")) {
+    stateText = desc.includes("返却") ? "工具返却中" : "工具取得中";
+    stateClass = "warn";
+  } else if (desc.includes("切削")) {
+    stateText = "切削中";
+    stateClass = "cut";
+  } else if (desc.includes("終了")) {
+    stateText = "終了";
+  } else if (desc.includes("主軸ON")) {
+    stateText = "主軸ON待ち";
+    stateClass = "warn";
+  } else if (desc.includes("移動") || desc.includes("下降") || desc.includes("上昇")) {
+    stateText = "位置決め";
+  }
+  const stateBox = $("machineStateLabel");
+  stateBox.textContent = stateText;
+  stateBox.className = `machine-state ${stateClass}`;
+  $("panelTool").textContent = pos.t ? `T${fmt(pos.t, 0)}` : "-";
+  $("panelRpm").textContent = fmt(pos.s, 0);
+  $("panelFeed").textContent = pos.f ? fmt(pos.f * state.feedOverride / 100, 0) : "-";
+  $("panelSpindle").textContent = pos.s && pos.s > 0 ? "ON" : "OFF";
+  $("panelSafe").textContent = state.analysis.safety.length ? "注意" : "正常";
 }
 
 function activeLine() {
@@ -1229,11 +1307,13 @@ function motionIndexForLine(line) {
   return exact ? exact.index : state.analysis.segments.length - 1;
 }
 
-function jumpToPoint(type) {
+function jumpToPoint(type, direction = 1) {
   const points = state.analysis.important?.[type] || [];
   if (!points.length) return;
   const currentLine = activeLine() || 0;
-  const point = points.find((item) => Number(item.line || 0) > currentLine) || points[0];
+  const point = direction >= 0
+    ? points.find((item) => Number(item.line || 0) > currentLine) || points[0]
+    : [...points].reverse().find((item) => Number(item.line || 0) < currentLine) || points[points.length - 1];
   state.activeLineOverride = Number(point.line || 0) || null;
   updateToolAtIndex(point.motionIndex ?? motionIndexForLine(Number(point.line || 0)), { keepActiveLine: true });
 }
@@ -1341,7 +1421,17 @@ function startPlayback() {
 
 function saveLayout() {
   try {
-    localStorage.setItem(LAYOUT_KEY, JSON.stringify({ ...state.layout, xyView: state.xyView, viewMode: state.viewMode, followTool: state.followTool, threeOptions: state.threeOptions }));
+    localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+      ...state.layout,
+      xyView: state.xyView,
+      viewMode: state.viewMode,
+      followTool: state.followTool,
+      threeOptions: state.threeOptions,
+      feedOverride: state.feedOverride,
+      speed: $("speedSelect")?.value,
+      lightweight: quality.lightweight,
+      qualityMode: quality.mode,
+    }));
   } catch {
     // localStorage may be disabled in some embedded browsers.
   }
@@ -1355,6 +1445,10 @@ function loadLayout() {
     if (saved.viewMode) state.viewMode = saved.viewMode;
     if (typeof saved.followTool === "boolean") state.followTool = saved.followTool;
     if (saved.threeOptions) state.threeOptions = { ...state.threeOptions, ...saved.threeOptions };
+    if (saved.feedOverride) state.feedOverride = Number(saved.feedOverride) || 100;
+    if (saved.speed) state.speed = saved.speed === "max" ? "max" : Number(saved.speed) || 1;
+    if (typeof saved.lightweight === "boolean") quality.lightweight = saved.lightweight;
+    if (saved.qualityMode) quality.mode = saved.qualityMode;
   } catch {
     // Keep defaults.
   }
@@ -1382,8 +1476,13 @@ function applyLayout() {
   $("labelToggle").checked = state.threeOptions.labels;
   $("axisToggle").checked = state.threeOptions.axis;
   $("safeZToggle").checked = state.threeOptions.safeZ;
+  $("zLabelToggle").checked = state.threeOptions.zLabels;
   $("originToggle").checked = state.threeOptions.origin;
   $("coordToggle").checked = state.threeOptions.coords;
+  $("feedOverrideSelect").value = String(state.feedOverride);
+  $("speedSelect").value = String(state.speed || 1);
+  $("lightModeToggle").checked = quality.lightweight;
+  $("qualitySelect").value = quality.mode;
   $("mainViewTitle").textContent = state.viewMode === "2d" ? "XY Motion" : state.viewMode === "split" ? "2D + 3D Motion" : "3D Motion";
   invalidateCanvasCaches();
   requestAnimationFrame(() => {
@@ -1508,7 +1607,10 @@ function bindEvents() {
   $("stopBtn").addEventListener("click", () => { state.playing = false; state.displayPos = null; jumpToIndex(0); });
   $("prevBtn").addEventListener("click", () => step(-1));
   $("nextBtn").addEventListener("click", () => step(1));
-  $("speedSelect").addEventListener("change", () => { state.speed = Number($("speedSelect").value); });
+  $("speedSelect").addEventListener("change", () => {
+    state.speed = Number($("speedSelect").value);
+    saveLayout();
+  });
   $("smoothModeToggle").addEventListener("change", () => {
     quality.smooth = $("smoothModeToggle").checked;
     state.displayPos = null;
@@ -1517,12 +1619,19 @@ function bindEvents() {
   $("lightModeToggle").addEventListener("change", () => {
     quality.lightweight = $("lightModeToggle").checked;
     invalidateCanvasCaches();
+    saveLayout();
     renderAllNow();
   });
   $("qualitySelect").addEventListener("change", () => {
     quality.mode = $("qualitySelect").value;
     quality.lightweight = quality.mode === "light" || $("lightModeToggle").checked;
     invalidateCanvasCaches();
+    saveLayout();
+    renderAllNow();
+  });
+  $("feedOverrideSelect").addEventListener("change", () => {
+    state.feedOverride = Number($("feedOverrideSelect").value) || 100;
+    saveLayout();
     renderAllNow();
   });
   $("viewModeSelect").addEventListener("change", () => {
@@ -1541,12 +1650,13 @@ function bindEvents() {
     saveLayout();
     renderAllNow();
   });
-  ["labelToggle", "axisToggle", "safeZToggle", "originToggle", "coordToggle"].forEach((id) => {
+  ["labelToggle", "axisToggle", "safeZToggle", "zLabelToggle", "originToggle", "coordToggle"].forEach((id) => {
     $(id).addEventListener("change", () => {
       state.threeOptions = {
         labels: $("labelToggle").checked,
         axis: $("axisToggle").checked,
         safeZ: $("safeZToggle").checked,
+        zLabels: $("zLabelToggle").checked,
         origin: $("originToggle").checked,
         coords: $("coordToggle").checked,
       };
@@ -1558,9 +1668,11 @@ function bindEvents() {
   $("jumpG92Btn").addEventListener("click", () => jumpToPoint("g92"));
   $("jumpMaterialTopBtn").addEventListener("click", () => jumpToPoint("materialTop"));
   $("jumpZDownBtn").addEventListener("click", () => jumpToPoint("zDown"));
+  $("jumpPrevZDownBtn").addEventListener("click", () => jumpToPoint("zDown", -1));
   $("jumpLowRapidBtn").addEventListener("click", () => jumpToPoint("lowRapid"));
   $("jumpStartBtn").addEventListener("click", jumpToFirstCut);
   $("jumpToolBtn").addEventListener("click", jumpToNextToolChange);
+  $("jumpPrevToolBtn").addEventListener("click", () => jumpToPoint("tool", -1));
   $("jumpWarnBtn").addEventListener("click", jumpToNextWarning);
   $("jumpMinZBtn").addEventListener("click", jumpToMinZ);
   $("jumpEndBtn").addEventListener("click", jumpToEnd);
@@ -1578,6 +1690,14 @@ function bindEvents() {
       state.activeLineOverride = Number(row.dataset.line || 0) || null;
       updateToolAtIndex(motionIndexForLine(Number(row.dataset.line || 0)), { keepActiveLine: true });
     }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(event.target?.tagName)) return;
+    if (event.key === "1") set3dView("top");
+    else if (event.key === "2") set3dView("iso");
+    else if (event.key === "3") set3dView("front");
+    else if (event.key === "4") set3dView("side");
+    else if (event.key.toLowerCase() === "r") reset3dCamera();
   });
   $("xyMaterialBtn").addEventListener("click", () => {
     state.xyMode = "material";
