@@ -100,6 +100,9 @@
             <button id="viewIsoBtn" class="mini" title="斜め視点">斜め</button>
             <button id="reset3dBtn" class="mini" title="3D視点リセット">視点</button>
             <label class="mini-check"><input id="followToolToggle" type="checkbox" />追従</label>
+            <label class="mini-check"><input id="toolBodyToggle" type="checkbox" />本体</label>
+            <label class="mini-check"><input id="tipOnlyToggle" type="checkbox" checked />刃先のみ</label>
+            <label class="mini-check"><input id="toolPathToggle" type="checkbox" checked />Path</label>
             <label class="mini-check"><input id="labelToggle" type="checkbox" />ラベル</label>
             <label class="mini-check"><input id="axisToggle" type="checkbox" checked />軸</label>
             <label class="mini-check"><input id="safeZToggle" type="checkbox" checked />SafeZ</label>
@@ -138,12 +141,13 @@
           <h2>Machine Panel</h2>
           <div class="machine-panel">
             <div class="machine-state" id="machineStateLabel">待機</div>
-            <div><span>Tool</span><strong id="panelTool">-</strong></div>
-            <div><span>Spindle</span><strong id="panelSpindle">OFF</strong></div>
-            <div><span>RPM</span><strong id="panelRpm">-</strong></div>
-            <div><span>Feed</span><strong id="panelFeed">-</strong></div>
+            <div><span>現在工具</span><strong id="panelTool">Tool:-</strong></div>
+            <div><span>TCP X</span><strong id="panelTcpX">0.000</strong></div>
+            <div><span>TCP Y</span><strong id="panelTcpY">0.000</strong></div>
+            <div><span>TCP Z</span><strong id="panelTcpZ">0.000</strong></div>
+            <div><span>送り</span><strong id="panelFeed">-</strong></div>
+            <div><span>回転数</span><strong id="panelRpm">-</strong></div>
             <label><span>Feed Override</span><select id="feedOverrideSelect"><option>10</option><option>25</option><option>50</option><option selected>100</option><option>150</option><option>200</option></select></label>
-            <div><span>Safe Check</span><strong id="panelSafe">正常</strong></div>
           </div>
         </section>
 

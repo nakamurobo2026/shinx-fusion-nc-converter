@@ -18,6 +18,7 @@ const state = {
   feedOverride: 100,
   layout: { mode: "field", zHidden: false, ncHidden: false, xyFullscreen: false, sideWidth: 320, bottomHeight: 210 },
   threeOptions: { labels: true, axis: true, safeZ: true, zLabels: false, origin: true, coords: false },
+  toolOptions: { body: false, tipOnly: true, path: true },
 };
 
 const perf = {
@@ -530,17 +531,29 @@ async function initThree() {
 function createToolMesh() {
   const group = new THREE.Group();
   const holder = new THREE.Mesh(
-    new THREE.CylinderGeometry(5.2, 5.2, 58, 24),
-    new THREE.MeshStandardMaterial({ color: 0xfacc15, emissive: 0x5c3b00, emissiveIntensity: 0.35, metalness: 0.25, roughness: 0.3 })
+    new THREE.CylinderGeometry(1.4, 1.4, 72, 16),
+    new THREE.MeshStandardMaterial({
+      color: 0xfacc15,
+      emissive: 0x5c3b00,
+      emissiveIntensity: 0.2,
+      metalness: 0.15,
+      roughness: 0.35,
+      transparent: true,
+      opacity: 0.3,
+      depthWrite: false,
+    })
   );
   holder.rotation.x = Math.PI / 2;
-  holder.position.z = 29;
+  holder.position.z = 36;
   const tip = new THREE.Mesh(
-    new THREE.SphereGeometry(9, 28, 18),
-    new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0x7f1d1d, emissiveIntensity: 0.65, metalness: 0.15, roughness: 0.25 })
+    new THREE.SphereGeometry(4.2, 24, 16),
+    new THREE.MeshStandardMaterial({ color: 0xef4444, emissive: 0x7f1d1d, emissiveIntensity: 0.75, metalness: 0.08, roughness: 0.22 })
   );
   tip.position.z = 0;
   group.add(holder, tip);
+  group.userData.body = holder;
+  group.userData.tip = tip;
+  group.userData.baseScale = 1;
   return group;
 }
 
@@ -732,9 +745,27 @@ function updateThreeDonePath() {
   lastDone3dIndex = current;
 }
 
+function toolScreenScale(pos) {
+  if (!threeReady || !camera) return 1;
+  const point = new THREE.Vector3(pos?.x || 0, pos?.y || 0, pos?.z || 0);
+  const distance = Math.max(80, camera.position.distanceTo(point));
+  return Math.max(0.65, Math.min(7.5, distance / 260));
+}
+
+function applyToolVisibility() {
+  if (pathGroup) pathGroup.visible = state.toolOptions.path;
+  if (donePathGroup) donePathGroup.visible = state.toolOptions.path;
+  if (!toolMesh) return;
+  const showBody = state.toolOptions.body && !state.toolOptions.tipOnly;
+  if (toolMesh.userData.body) toolMesh.userData.body.visible = showBody;
+  if (toolMesh.userData.tip) toolMesh.userData.tip.visible = true;
+}
+
 function updateThreeTool(pos) {
   if (!threeReady || !toolMesh) return;
   toolMesh.position.set(pos.x || 0, pos.y || 0, pos.z || 0);
+  toolMesh.scale.setScalar(toolScreenScale(pos));
+  applyToolVisibility();
   updateThreeDonePath();
   updateThreeDynamicGuides(pos);
   if (state.followTool && controls) {
@@ -749,19 +780,20 @@ function updateThreeDynamicGuides(pos) {
   const x = pos.x || 0;
   const y = pos.y || 0;
   const z = pos.z || 0;
+  const scale = toolScreenScale(pos);
   dynamicGroup.add(lineObject([new THREE.Vector3(x, y, 0), new THREE.Vector3(x, y, z)], 0xfbbf24, true, 0.9));
   dynamicGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(12, 30, 20),
+    new THREE.SphereGeometry(4.8 * scale, 24, 16),
     new THREE.MeshBasicMaterial({ color: 0xff2d20, transparent: true, opacity: 0.95 })
   ));
   dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, z);
   dynamicGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(20, 30, 20),
+    new THREE.SphereGeometry(8.5 * scale, 24, 16),
     new THREE.MeshBasicMaterial({ color: 0xff5a1f, transparent: true, opacity: 0.22, depthWrite: false })
   ));
   dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, z);
   dynamicGroup.add(new THREE.Mesh(
-    new THREE.SphereGeometry(4, 16, 10),
+    new THREE.SphereGeometry(2.8 * scale, 16, 10),
     new THREE.MeshBasicMaterial({ color: 0xfbbf24 })
   ));
   dynamicGroup.children[dynamicGroup.children.length - 1].position.set(x, y, 0);
@@ -773,6 +805,8 @@ function updateThreeDynamicGuides(pos) {
 function renderThreeScene() {
   if (!threeReady || !renderer || !camera || !$("threeViewport")) return;
   if (state.viewMode === "2d") return;
+  applyToolVisibility();
+  if (toolMesh) toolMesh.scale.setScalar(toolScreenScale(toolMesh.position));
   const host = $("threeViewport");
   const w = Math.max(1, host.clientWidth);
   const h = Math.max(1, host.clientHeight);
@@ -1361,13 +1395,12 @@ function updateMachinePanel(pos, row) {
   const stateBox = $("machineStateLabel");
   stateBox.textContent = stateText;
   stateBox.className = `machine-state ${stateClass}`;
-  $("panelTool").textContent = pos.t ? `T${fmt(pos.t, 0)}` : "-";
+  $("panelTool").textContent = pos.t ? `Tool:T${fmt(pos.t, 0)}` : "Tool:-";
+  $("panelTcpX").textContent = fmt(pos.x);
+  $("panelTcpY").textContent = fmt(pos.y);
+  $("panelTcpZ").textContent = fmt(pos.z);
   $("panelRpm").textContent = fmt(pos.s, 0);
   $("panelFeed").textContent = pos.f ? fmt(pos.f * state.feedOverride / 100, 0) : "-";
-  $("panelSpindle").textContent = pos.s && pos.s > 0 ? "ON" : "OFF";
-  const hasDanger = state.analysis.safety.some((item) => item.level === "danger");
-  const hasWarn = state.analysis.safety.some((item) => item.level === "warn");
-  $("panelSafe").textContent = hasDanger ? "危険" : hasWarn ? "要確認" : "正常";
 }
 
 function activeLine() {
@@ -1500,6 +1533,7 @@ function saveLayout() {
       viewMode: state.viewMode,
       followTool: state.followTool,
       threeOptions: state.threeOptions,
+      toolOptions: state.toolOptions,
       feedOverride: state.feedOverride,
       speed: $("speedSelect")?.value,
       lightweight: quality.lightweight,
@@ -1518,6 +1552,7 @@ function loadLayout() {
     if (saved.viewMode) state.viewMode = saved.viewMode;
     if (typeof saved.followTool === "boolean") state.followTool = saved.followTool;
     if (saved.threeOptions) state.threeOptions = { ...state.threeOptions, ...saved.threeOptions };
+    if (saved.toolOptions) state.toolOptions = { ...state.toolOptions, ...saved.toolOptions };
     if (saved.feedOverride) state.feedOverride = Number(saved.feedOverride) || 100;
     if (saved.speed) state.speed = saved.speed === "max" ? "max" : Number(saved.speed) || 1;
     if (typeof saved.lightweight === "boolean") quality.lightweight = saved.lightweight;
@@ -1546,6 +1581,9 @@ function applyLayout() {
   $("xyFullscreenBtn").textContent = state.layout.xyFullscreen ? "戻る" : "全画面";
   $("viewModeSelect").value = state.viewMode;
   $("followToolToggle").checked = state.followTool;
+  $("toolBodyToggle").checked = state.toolOptions.body;
+  $("tipOnlyToggle").checked = state.toolOptions.tipOnly;
+  $("toolPathToggle").checked = state.toolOptions.path;
   $("labelToggle").checked = state.threeOptions.labels;
   $("axisToggle").checked = state.threeOptions.axis;
   $("safeZToggle").checked = state.threeOptions.safeZ;
@@ -1561,6 +1599,7 @@ function applyLayout() {
   requestAnimationFrame(() => {
     drawXY(true);
     drawSection(true);
+    applyToolVisibility();
     renderThreeScene();
   });
 }
@@ -1722,6 +1761,18 @@ function bindEvents() {
     state.followTool = $("followToolToggle").checked;
     saveLayout();
     renderAllNow();
+  });
+  ["toolBodyToggle", "tipOnlyToggle", "toolPathToggle"].forEach((id) => {
+    $(id).addEventListener("change", () => {
+      state.toolOptions = {
+        body: $("toolBodyToggle").checked,
+        tipOnly: $("tipOnlyToggle").checked,
+        path: $("toolPathToggle").checked,
+      };
+      saveLayout();
+      applyToolVisibility();
+      renderAllNow();
+    });
   });
   ["labelToggle", "axisToggle", "safeZToggle", "zLabelToggle", "originToggle", "coordToggle"].forEach((id) => {
     $(id).addEventListener("change", () => {
